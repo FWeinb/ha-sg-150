@@ -1,0 +1,16 @@
+# Example services.yaml entry
+
+# Service ID
+start_call:
+  fields:
+    to:
+      required: true
+      selector:
+        text:
+
+stop_call:
+  fields:
+    call_id:
+      required: true
+      selector:
+        text:

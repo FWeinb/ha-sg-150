@@ -1,0 +1,133 @@
+{
+    "config": {
+        "step": {
+            "user": {
+                "title": "Siedle Gateway Account Hinzufügen",
+                "description": "Gib die Anmeldedaten für das lokales Siedle Gateway ein.",
+                "data": {
+                    "host-address": "Hostadresse",
+                    "password": "[%key:common::config_flow::data::password%]",
+                    "username": "[%key:common::config_flow::data::username%]"
+                },
+                "data_description": {
+                    "host-address": "IP-Addresse des Siedle Gateway",
+                    "username": "In den meisten fällen ist dieser 'admin'",
+                    "password": "Passwort für die lokale Anmeldung am Siedle Gateway"
+                }
+            },
+            "user_options": {
+                "title": "Einrichten des SIP Servers",
+                "description": "Diese Anmeldedaten können anschließend innerhalb des Siedle Gateways unter Netwerk-Teilnehmer -> Telefonanbindung zur Verbindung mit HomeAssistant genutzt werden",
+                "data": {
+                    "sip-caller-ip": "SIP Caller IP",
+                    "sip-user": "SIP Username",
+                    "sip-password": "SIP Passwort",
+                    "sip-port": "SIP Port",
+                    "sip-number": "SIP Number"
+                },
+                "data_description": {
+                    "sip-caller-ip": "IP Addresse welche als SIP Caller genutzt wird.",
+                    "sip-user": "Benutzername für die Anmeldung durch das Siedle Gateways",
+                    "sip-password": "Password für die Anmeldung durch das Siedle Gateways",
+                    "sip-port": "Port für die Anmeldung durch das Siedle Gateways",
+                    "sip-number": "Telefonnummer für das im Siedle Gateway Konfigurierte TK-Telefon"
+                }
+            }
+        },
+        "error": {
+            "auth": "Benutzername/Passwort falsch.",
+            "connection": "Die Verbindung zum Server konnte nicht hergestellt werden.",
+            "unknown": "[%key:common::config_flow::error::unknown%]"
+        },
+        "abort": {
+            "already_configured": "[%key:common::config_flow::abort::already_configured_account%]"
+        }
+    },
+    "options": {
+        "step": {
+            "init": {
+                "title": "Einrichten des SIP Servers",
+                "description": "Diese Anmeldedaten können anschließend innerhalb des Siedle Gateways unter Netwerk-Teilnehmer -> Telefonanbindung zur Verbindung mit HomeAssistant genutzt werden",
+                "data": {
+                    "sip-caller-ip": "SIP Caller IP",
+                    "sip-user": "SIP Username",
+                    "sip-password": "SIP Passwort",
+                    "sip-port": "SIP Port",
+                    "sip-number": "SIP Number"
+                },
+                "data_description": {
+                    "sip-caller-ip": "IP Addresse welche als SIP Caller genutzt wird.",
+                    "sip-user": "Benutzername für die Anmeldung durch das Siedle Gateways",
+                    "sip-password": "Password für die Anmeldung durch das Siedle Gateways",
+                    "sip-port": "Port für die Anmeldung durch das Siedle Gateways",
+                    "sip-number": "Telefonnummer für das im Siedle Gateway Konfigurierte TK-Telefon"
+                }
+            }
+        }
+    },
+    "entity": {
+        "camera": {
+            "camera": {
+                "name": "[%key:component::camera::title%]"
+            }
+        },
+        "binary_sensor": {
+            "sip_connection": {
+                "name": "HomeAssistant SIP Verbindung",
+                "state_attributes": {
+                    "sip-client": {
+                        "name": "SIP Client-Addresse"
+                    },
+                    "expires-at": {
+                        "name": "Ablaufzeitpunkt"
+                    }
+                }
+            }
+        },
+        "sensor": {
+            "mac_address": {
+                "name": "MAC-Address"
+            },
+            "phone_numer": {
+                "name": "Telefonnummer"
+            },
+            "door_type": {
+                "name": "Türtyp"
+            }
+        },
+        "event": {
+            "bell": {
+                "name": "Klingle",
+                "state_attributes": {
+                    "event_type": {
+                        "state": {
+                            "ringing": "Ringing"
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "services": {
+        "start_call": {
+            "name": "Starten eines Anrufes",
+            "description": "Started einen In-Home Anruf über das Siedle Gateway.",
+            "fields": {
+                "to": {
+                    "name": "Telefonnummer die Angerufen wird.",
+                    "description": "Die vollständige Telefonnummer (mit Präfix) welche im In-Home System angerufen wird."
+                }
+            }
+        },
+        "stop_call": {
+            "name": "Anruf stoppen",
+            "description": "Auflegen eines In-Home Anruf über das Siedle Gateway.",
+            "fields": {
+                "call_id": {
+                    "name": "Identifkation des Anrufes",
+                    "description": "Die Anrufsidentifkiaton welche durch beim sarten eines Anrufs erzeugt wurde."
+                }
+            }
+        }
+    }
+}
