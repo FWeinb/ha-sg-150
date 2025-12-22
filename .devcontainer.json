@@ -1,45 +1,47 @@
 {
-    "name": "ludeeus/integration_blueprint",
-    "image": "mcr.microsoft.com/devcontainers/python:3.13",
+    "name": "fweinb/ha-sg-150",
+    "image": "mcr.microsoft.com/devcontainers/python:3.13-bullseye",
     "postCreateCommand": "scripts/setup",
-    "forwardPorts": [
-        8123
+    "appPort": [
+        "8123",
+        "50600:50600/udp"
     ],
     "portsAttributes": {
         "8123": {
             "label": "Home Assistant",
+            "onAutoForward": "notify"
+        },
+        "50600": {
+            "label": "SG-150 SIP Port",
             "onAutoForward": "notify"
         }
     },
     "customizations": {
         "vscode": {
             "extensions": [
-                "charliermarsh.ruff",
-                "github.vscode-pull-request-github",
                 "ms-python.python",
-                "ms-python.vscode-pylance",
-                "ryanluker.vscode-coverage-gutters"
+                "github.vscode-pull-request-github",
+                "ryanluker.vscode-coverage-gutters",
+                "ms-python.vscode-pylance"
             ],
             "settings": {
                 "files.eol": "\n",
                 "editor.tabSize": 4,
-                "editor.formatOnPaste": true,
+                "python.pythonPath": "/usr/bin/python3",
+                "python.analysis.autoSearchPaths": false,
+                "python.linting.pylintEnabled": true,
+                "python.linting.enabled": true,
+                "python.formatting.provider": "black",
+                "python.formatting.blackPath": "/usr/local/py-utils/bin/black",
+                "editor.formatOnPaste": false,
                 "editor.formatOnSave": true,
-                "editor.formatOnType": false,
-                "files.trimTrailingWhitespace": true,
-                "python.analysis.typeCheckingMode": "basic",
-                "python.analysis.autoImportCompletions": true,
-                "python.defaultInterpreterPath": "/usr/local/bin/python",
-                "[python]": {
-                    "editor.defaultFormatter": "charliermarsh.ruff"
-                }
+                "editor.formatOnType": true,
+                "files.trimTrailingWhitespace": true
             }
         }
     },
     "remoteUser": "vscode",
     "features": {
-        "ghcr.io/devcontainers-extra/features/apt-packages:1": {
-            "packages": "ffmpeg,libturbojpeg0,libpcap-dev"
-        }
+        "ghcr.io/devcontainers/features/rust:1": {}
     }
 }

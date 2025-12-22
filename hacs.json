@@ -1,5 +1,5 @@
 {
-    "name": "Integration blueprint",
-    "homeassistant": "2025.2.4",
+    "name": "HA SG-150",
+    "homeassistant": "2025.12.1",
     "hacs": "2.0.5"
 }

@@ -1,0 +1,13 @@
+{
+  "domain": "sg_150",
+  "name": "Siedle Gateway (SG-150)",
+  "codeowners": [
+    "@fweinb"
+  ],
+  "config_flow": true,
+  "documentation": "https://github.com/fweinb/ha-sg-150",
+  "iot_class": "local_push",
+  "integration_type": "hub",
+  "issue_tracker": "https://github.com/fweinb/ha-sg-150/issues",
+  "version": "0.1.0"
+}

@@ -1,0 +1,108 @@
+{
+    "config": {
+        "step": {
+            "user": {
+                "title": "Add your Siedle Gateway Account",
+                "description": "Enter credentials for your local Siedle Gateway",
+                "data": {
+                    "host-address": "Host Address",
+                    "username": "Username",
+                    "password": "Password"
+                },
+                "data_description": {
+                    "host-address": "IP Address of the Siedle Gateway",
+                    "username": "In most cases this should be admin",
+                    "password": "Password used to authenticate against the web interface"
+                }
+            },
+            "user_options": {
+                "title": "Setup local SIP-Server",
+                "description": "Enter SIP Credentials for Siedle Gateway",
+                "data": {
+                    "sip-caller-ip": "SIP Caller IP",
+                    "sip-user": "SIP Username",
+                    "sip-password": "SIP Passwort",
+                    "sip-port": "SIP Port",
+                    "sip-number": "SIP Number"
+                },
+                "data_description": {
+                    "sip-caller-ip": "External ip address that will be used as the SIP Caller IP",
+                    "sip-user": "Username the Siedle Gateway will use to connect the SIP-Client",
+                    "sip-password": "Password used by the Siedle Gateway to authenticate with the SIP-Server",
+                    "sip-port": "Port number Siedle Gateway will connect with the SIP-Server",
+                    "sip-number": "Phone number configured in Siedle Gateway for the Softphone"
+                }
+            }
+        },
+        "error": {
+            "auth": "Username/Password is wrong.",
+            "connection": "Unable to connect to the server.",
+            "unknown": "Unknown error occurred."
+        },
+        "abort": {
+            "already_configured": "This entry is already configured."
+        }
+    },
+    "options": {
+        "step": {
+            "init": {
+                "title": "Setup local SIP-Server",
+                "description": "Enter SIP Credentials for Siedle Gateway",
+                "data": {
+                    "sip-caller-ip": "SIP Caller IP",
+                    "sip-user": "SIP Username",
+                    "sip-password": "SIP Passwort",
+                    "sip-port": "SIP Port",
+                    "sip-number": "SIP Number"
+                },
+                "data_description": {
+                    "sip-caller-ip": "External ip address that will be used as the SIP Caller IP",
+                    "sip-user": "Username the Siedle Gateway will use to connect the SIP-Client",
+                    "sip-password": "Password used by the Siedle Gateway to authenticate with the SIP-Server",
+                    "sip-port": "Port number Siedle Gateway will connect with the SIP-Server",
+                    "sip-number": "Phone number configured in Siedle Gateway for the Softphone"
+                }
+            }
+        }
+    },
+    "entity": {
+        "binary_sensor": {
+            "sip_connection": {
+                "name": "HomeAssistant SIP Connection"
+            }
+        },
+        "sensor": {
+            "mac_address": {
+                "name": "MAC Address"
+            },
+            "phone_numer": {
+                "name": "Phone Number"
+            },
+            "door_type": {
+                "name": "Door Type"
+            }
+        }
+    },
+    "services": {
+        "start_call": {
+            "name": "Start a phone call",
+            "description": "Starts an In-Home Phone Call",
+            "fields": {
+                "to": {
+                    "name": "Number To Call",
+                    "description": "The full Phone number (including the prefix) to be called via the In-Home System"
+                }
+            }
+        },
+        "stop_call": {
+            "name": "Stop a phone call",
+            "description": "Stops a running In-Home Phone Call",
+            "fields": {
+                "call_id": {
+                    "name": "Call Identifier",
+                    "description": "The Call-ID returned by a previous started phone call"
+                }
+            }
+        }
+    }
+}
