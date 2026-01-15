@@ -88,7 +88,7 @@ class SG150Camera(Camera):  # pylint: disable=abstract-method
     """Camera Entity for SG150 MJPEG Stream."""
 
     _attr_has_entity_name = True
-    _attr_translation_key = "Camera"
+    _attr_translation_key = "camera"
     _attr_frame_interval = 15
 
     def __init__(

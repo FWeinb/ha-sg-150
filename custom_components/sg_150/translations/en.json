@@ -68,7 +68,7 @@
     "entity": {
         "camera": {
             "camera": {
-                "name": "[%key:component::camera::title%]"
+                "name": "Camera"
             }
         },
         "binary_sensor": {
