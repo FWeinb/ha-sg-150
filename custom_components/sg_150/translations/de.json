@@ -6,8 +6,8 @@
                 "description": "Gib die Anmeldedaten für das lokales Siedle Gateway ein.",
                 "data": {
                     "host-address": "Hostadresse",
-                    "password": "[%key:common::config_flow::data::password%]",
-                    "username": "[%key:common::config_flow::data::username%]"
+                    "password": "Passwort",
+                    "username": "Benutzername"
                 },
                 "data_description": {
                     "host-address": "IP-Addresse des Siedle Gateway",
