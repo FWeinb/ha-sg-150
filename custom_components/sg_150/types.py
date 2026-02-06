@@ -183,7 +183,7 @@ class SG150DeviceCapability(RootModel):
         return getattr(self.root, name)
 
 
-class SG150DeviceType(str, Enum):
+class SG150DeviceType(Enum):
     """API SG150DeviceType."""
 
     PBXPHONE = "PBXPHONE"
