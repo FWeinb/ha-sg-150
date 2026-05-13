@@ -4,7 +4,7 @@ Types used in the API.
 These are used as return types of various API-Calls
 """
 
-from enum import Enum
+from enum import StrEnum
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, RootModel
@@ -198,7 +198,7 @@ class SG150DeviceCapability(RootModel):
         return getattr(self.root, name)
 
 
-class SG150DeviceType(Enum):
+class SG150DeviceType(StrEnum):
     """API SG150DeviceType."""
 
     PBXPHONE = "PBXPHONE"
