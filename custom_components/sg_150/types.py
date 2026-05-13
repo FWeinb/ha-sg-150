@@ -164,6 +164,20 @@ class SG150DeviceCapabilityAutomationTile(BaseModel):
     properties: SG150DeviceCapabilityAutomationTileProperties
 
 
+class SG150DeviceCapabilityAutomationProperties(BaseModel):
+    """API SG150DeviceCapabilityAutomationProperties."""
+
+    controllerId: str  # noqa: N815
+    automationItems: list[dict]  # noqa: N815
+
+
+class SG150DeviceCapabilityAutomation(BaseModel):
+    """API SG150DeviceCapabilityAutomation."""
+
+    type: Literal["AUTOMATION"]
+    properties: SG150DeviceCapabilityAutomationProperties
+
+
 class SG150DeviceCapability(RootModel):
     """API SG150DeviceCapability."""
 
@@ -175,6 +189,7 @@ class SG150DeviceCapability(RootModel):
         | SG150DeviceCapabilityVideoExtraction
         | SG150DeviceCapabilityVideoSender
         | SG150DeviceCapabilitySusApp
+        | SG150DeviceCapabilityAutomation
         | SG150DeviceCapabilityAutomationTile
     ) = Field(discriminator="type")
 
