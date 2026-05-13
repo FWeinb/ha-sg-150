@@ -122,6 +122,8 @@ def build_response(
     body: str = "",
 ) -> str:
     """Create a response message."""
+    body_bytes = body.encode()
+
     resp_lines = [
         f"SIP/2.0 {code} {reason}",
         f"Via: {headers.get('Via', '')}",
@@ -129,14 +131,15 @@ def build_response(
         f"To: {headers.get('To', '')}",
         f"Call-ID: {headers.get('Call-ID', '')}",
         f"CSeq: {headers.get('CSeq', '')}",
-        f"Content-Length: {len(body)}",
+        f"Content-Length: {len(body_bytes)}",
         "Server: MiniSIP",
     ]
     if extra_headers:
         resp_lines.extend(extra_headers)
+
     resp_lines.append("")
-    resp_lines.append(body)
-    return "\r\n".join(resp_lines).encode()
+
+    return ("\r\n".join(resp_lines)).encode() + body_bytes
 
 
 def build_request(
