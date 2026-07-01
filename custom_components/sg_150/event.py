@@ -5,7 +5,11 @@ from __future__ import annotations
 import dataclasses
 from typing import TYPE_CHECKING
 
-from homeassistant.components.event import EventDeviceClass, EventEntity
+from homeassistant.components.event import (
+    DoorbellEventType,
+    EventDeviceClass,
+    EventEntity,
+)
 
 from .const import LOGGER
 from .entity import SG150PushDeviceEntity
@@ -55,7 +59,7 @@ class SG150RingingEvent(SG150PushDeviceEntity, EventEntity):
     ) -> None:
         """Initialize the doorbell event entity."""
         super().__init__(coordinator, device, name="Bell")
-        self._attr_event_types = ["ringing"]
+        self._attr_event_types = [DoorbellEventType.RING, "ringing"]
         self._minisip = minisip
         self.icon = "mdi:bell-ring"
 
