@@ -1,6 +1,6 @@
 {
   "name": "fweinb/ha-sg-150",
-  "image": "mcr.microsoft.com/devcontainers/python:3.13-bullseye",
+  "image": "mcr.microsoft.com/devcontainers/python:3.14-trixie",
   "postCreateCommand": "scripts/setup",
   "appPort": ["8123", "50600:50600/udp"],
   "portsAttributes": {
