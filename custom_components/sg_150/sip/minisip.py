@@ -181,7 +181,7 @@ class CallContext:
 class MiniSIPServer:
     """Minimal SIP Server implementation."""
 
-    def __init__(  # noqa: PLR0913
+    def __init__(  # noqa: PLR0913, PLR0917
         self,
         users: dict[str, str],
         host: str = "0.0.0.0",  # noqa: S104 exactly what the default should be?
