@@ -128,6 +128,24 @@
                     "description": "Die Anrufsidentifkiaton welche durch beim sarten eines Anrufs erzeugt wurde."
                 }
             }
+        },
+        "send_sip_info_dtmf": {
+            "name": "Senden von SIP Info DTMF",
+            "description": "Sendet ein DTMF Signal über das Siedle Gateway.",
+            "fields": {
+                "call_id": {
+                    "name": "Identifkation des Anrufes",
+                    "description": "Die Anrufsidentifkiaton welche durch beim sarten eines Anrufs erzeugt wurde."
+                },
+                "signal": {
+                    "name": "DTMF Signal",
+                    "description": "Das zu sendende DTMF Signal (0-9, *, #, A-D)"
+                },
+                "duration": {
+                    "name": "Dauer des Signals",
+                    "description": "Die Dauer des zu sendenden DTMF Signals in Millisekunden (default: 100ms)"
+                }
+            }
         }
     }
 }

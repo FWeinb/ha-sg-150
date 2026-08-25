@@ -1,6 +1,3 @@
-# Example services.yaml entry
-
-# Service ID
 start_call:
   fields:
     to:
@@ -12,5 +9,20 @@ stop_call:
   fields:
     call_id:
       required: true
+      selector:
+        text:
+
+send_sip_info_dtmf:
+  fields:
+    call_id:
+      required: true
+      selector:
+        text:
+    signal:
+      required: true
+      selector:
+        text:
+    duration:
+      required: false
       selector:
         text:

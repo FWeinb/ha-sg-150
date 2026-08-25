@@ -665,6 +665,32 @@ class MiniSIPServer:
         self.transport.sendto(data, target_addr)
         log_sip_event("ACK_SENT", addr=f"{target_addr}", call_id=call_id)
 
+    async def send_sip_info_dtmf(
+        self, call_id: str, signal: str, duration: str
+    ) -> None:
+        """Send SIP INFO DTMF."""
+        if call_id not in self.active_calls:
+            _msg = f"There is currently no active call with call id: {call_id}"
+            raise ValueError(_msg)
+
+        addr, from_header, to_header = self.active_calls[call_id][:3]
+
+        cseq_num = self.next_cseq_for(call_id)
+        headers = {
+            "Via": f"SIP/2.0/UDP {self.server_address()};branch={new_branch_id()}",
+            "From": from_header,
+            "To": to_header,
+            "Call-ID": call_id,
+            "CSeq": f"{cseq_num} INFO",
+            "Content-Type": "application/dtmf-relay",
+            "Contact": from_header,
+        }
+
+        body = f"Signal={signal}\r\nDuration={duration}\r\n"
+        data = build_request("INFO", to_header, headers=headers, body=body)
+        self.transport.sendto(data, addr)
+        log_sip_event("INFO_SENT", addr=f"{addr}", call_id=call_id)
+
     async def send_bye(self, call_id: str) -> None:
         """Send BYE response."""
         if call_id not in self.active_calls:

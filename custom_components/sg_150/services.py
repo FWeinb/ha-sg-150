@@ -53,6 +53,15 @@ def setup_services(
         if call_id:
             await server.send_bye(call_id)
 
+    @callback
+    async def handle_send_sip_info_dtmf(call: ServiceCall) -> None:
+        """Handle the DTMF signal call."""
+        call_id = call.data.get("call_id")
+        signal = call.data.get("signal")
+        duration = call.data.get("duration") or "100"
+        if call_id and signal:
+            await server.send_sip_info_dtmf(call_id, signal, duration)
+
     hass.services.async_register(
         DOMAIN,
         "start_call",
@@ -63,5 +72,11 @@ def setup_services(
         DOMAIN,
         "stop_call",
         handle_stop_call,
+        supports_response=SupportsResponse.NONE,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        "send_sip_info_dtmf",
+        handle_send_sip_info_dtmf,
         supports_response=SupportsResponse.NONE,
     )
