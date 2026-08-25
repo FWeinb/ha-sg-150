@@ -128,6 +128,24 @@
                     "description": "The Call-ID returned by a previous started phone call"
                 }
             }
+        },
+        "send_sip_info_dtmf": {
+            "name": "Send DTMF Signal",
+            "description": "Sends a DTMF signal to the Siedle Gateway during an In-Home phone call",
+            "fields": {
+                "call_id": {
+                    "name": "Call Identifier",
+                    "description": "The Call-ID returned by a previous started phone call"
+                },
+                "signal": {
+                    "name": "DTMF Signal",
+                    "description": "The DTMF signal to send (0-9, *, #)"
+                },
+                "duration": {
+                    "name": "Duration",
+                    "description": "The duration of the DTMF signal in milliseconds (default: 100ms)"
+                }
+            }
         }
     }
 }
