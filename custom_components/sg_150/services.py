@@ -62,6 +62,13 @@ def setup_services(
         if call_id and signal:
             await server.send_sip_info_dtmf(call_id, signal, duration)
 
+    @callback
+    async def handle_get_active_calls(_: ServiceCall) -> ServiceResponse:
+        """Handle the get active calls service."""
+        # get all keys from the server's active_calls dictionary
+        active_calls = list(server.active_calls.keys())
+        return {"active_calls": active_calls}
+
     hass.services.async_register(
         DOMAIN,
         "start_call",
@@ -79,4 +86,10 @@ def setup_services(
         "send_sip_info_dtmf",
         handle_send_sip_info_dtmf,
         supports_response=SupportsResponse.NONE,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        "get_active_calls",
+        handle_get_active_calls,
+        supports_response=SupportsResponse.ONLY,
     )

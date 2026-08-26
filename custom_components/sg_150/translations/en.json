@@ -125,7 +125,7 @@
             "fields": {
                 "call_id": {
                     "name": "Call Identifier",
-                    "description": "The Call-ID returned by a previous started phone call"
+                    "description": "The call id from a previous started phone call"
                 }
             }
         },
@@ -135,7 +135,7 @@
             "fields": {
                 "call_id": {
                     "name": "Call Identifier",
-                    "description": "The Call-ID returned by a previous started phone call"
+                    "description": "The call id from a previous started phone call"
                 },
                 "signal": {
                     "name": "DTMF Signal",
@@ -146,6 +146,11 @@
                     "description": "The duration of the DTMF signal in milliseconds (default: 100ms)"
                 }
             }
+        },
+        "get_active_calls": {
+            "name": "Get Active Calls",
+            "description": "Returns a list of active call IDs.",
+            "fields": {}
         }
     }
 }
