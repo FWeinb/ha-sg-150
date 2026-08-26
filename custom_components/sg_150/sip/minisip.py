@@ -99,19 +99,29 @@ def normalize_headers(headers: dict[str, str]) -> dict[str, str]:
     return normalized
 
 
-def parse_sip_message(data: bytes) -> (str, str, dict[str, str]):
+def parse_sip_message(data: bytes) -> (str, str, dict[str, str], list[str]):
     """Parse the SIP package an returns the decoded values."""
     text = data.decode(errors="ignore")
     lines = text.split("\r\n")
     start_line = lines[0]
     method = start_line.split(" ", 1)[0].upper()
     raw_headers = {}
+    content = []
+    header_section = True
     for line in lines[1:]:
-        if ":" in line:
-            k, v = line.split(":", 1)
-            raw_headers[k.strip()] = v.strip()
+        if line == "":
+            header_section = False
+            continue
+
+        if header_section:
+            if ":" in line:
+                k, v = line.split(":", 1)
+                raw_headers[k.strip()] = v.strip()
+        else:
+            content.append(line)
+
     headers = normalize_headers(raw_headers)
-    return start_line, method, headers
+    return start_line, method, headers, content
 
 
 def build_response(
@@ -119,10 +129,11 @@ def build_response(
     reason: str,
     headers: dict[str, str],
     extra_headers: list[str] | None = None,
-    body: str = "",
+    body: str | None = None,
 ) -> str:
     """Create a response message."""
-    body_bytes = body.encode()
+    body_bytes = body.encode() if body is not None else b""
+    body_length = len(body_bytes)
 
     resp_lines = [
         f"SIP/2.0 {code} {reason}",
@@ -131,15 +142,21 @@ def build_response(
         f"To: {headers.get('To', '')}",
         f"Call-ID: {headers.get('Call-ID', '')}",
         f"CSeq: {headers.get('CSeq', '')}",
-        f"Content-Length: {len(body_bytes)}",
+        f"Content-Length: {body_length}",
         "Server: MiniSIP",
     ]
+
+    if "Contact" in headers:
+        resp_lines.append(f"Contact: {headers.get('Contact')}")
+
     if extra_headers:
         resp_lines.extend(extra_headers)
 
-    resp_lines.append("")
+    resp_lines.append("")  # End of headers
 
-    return ("\r\n".join(resp_lines)).encode() + body_bytes
+    return ("\r\n".join(resp_lines)).encode() + (
+        b"\r\n" + body_bytes if body_length else b""
+    )
 
 
 def build_request(
@@ -374,7 +391,7 @@ class MiniSIPServer:
         cseq_num, _ = self.parse_cseq(cseq_header)
         if call_id and cseq_num is not None:
             last_num = self.last_cseq.get(call_id, -1)
-            if cseq_num <= last_num:
+            if cseq_num < last_num:
                 log_sip_event(
                     "OLD_CSEQ",
                     addr=f"{addr}",
@@ -402,8 +419,6 @@ class MiniSIPServer:
 
     async def handle_register(self, headers: dict[str, str], addr: (str, int)) -> None:
         """Handle the REGISTER method."""
-        log_sip_event("REGISTER_RECEIVED", addr=f"{addr}", headers=headers)
-
         if not self.check_cseq(headers, addr):
             self.transport.sendto(build_response(400, "Bad Request", headers), addr)
             return
@@ -460,13 +475,6 @@ class MiniSIPServer:
             addr=addr,
         )
 
-        log_sip_event(
-            "INVITE_RECEIVED",
-            addr=f"{addr}",
-            headers=headers,
-            call_context=call_context,
-        )
-
         accept = True
         for cb in self.on_incoming_call:
             result = await cb(call_context)
@@ -474,6 +482,12 @@ class MiniSIPServer:
                 accept = False
 
         if accept:
+            # Update headers to create a valid response with a tag in the To header
+            # and a Contact header that matches the To header we assume we always want
+            # to accept it.
+            headers["Contact"] = headers.get("To")
+            headers["To"] = f"{headers.get('To')};tag=minisip"
+
             ringing_resp = build_response(180, "Ringing", headers)
             self.transport.sendto(ringing_resp, addr)
             await self._fire_event("on_call_ringing", call_id, addr)
@@ -485,17 +499,24 @@ class MiniSIPServer:
                 "s=MiniSIP Call\r\n"
                 f"c=IN IP4 {self.call_host}\r\n"
                 "t=0 0\r\n"
-                "m=audio 5005 RTP/AVP 8\r\n"
-                "a=rtpmap:8 PCMA/8000\r\n"
-                "a=fmtp:8 0-15\r\n"
+                "m=audio 5004 RTP/AVP 8 101\r\n"
+                "a=rtpmap:101 telephone-event/8000\r\n"
+                "a=fmtp:101 0-16\r\n"
+                "a=ptime:20\r\n"
+                "a=maxptime:150\r\n"
+                "a=sendrecv"
             )
+
             resp = build_response(
                 200,
                 "OK",
                 headers,
-                extra_headers=["Content-Type: application/sdp"],
+                extra_headers=[
+                    "Content-Type: application/sdp",
+                ],
                 body=sdp,
             )
+
             self.transport.sendto(resp, addr)
             self.active_calls[call_id] = (addr, headers.get("From"), headers.get("To"))
             await self._fire_event("on_call_established", call_id, addr)
@@ -509,7 +530,6 @@ class MiniSIPServer:
     async def handle_bye(self, headers: dict[str, str], addr: (str, int)) -> None:
         """Handle the BYE method."""
         call_id = headers.get("Call-ID")
-        log_sip_event("BYE_RECEIVED", addr=f"{addr}", headers=headers, call_id=call_id)
 
         self.transport.sendto(build_response(200, "OK", headers), addr)
         if call_id in self.active_calls:
@@ -518,8 +538,6 @@ class MiniSIPServer:
 
     async def handle_options(self, headers: dict[str, str], addr: (str, int)) -> None:
         """Handle the OPTIONS method."""
-        log_sip_event("OPTIONS_RECEIVED", addr=f"{addr}", headers=headers)
-
         if not self.check_cseq(headers, addr):
             return build_response(400, "Bad Request", headers)
 
@@ -686,10 +704,10 @@ class MiniSIPServer:
             "Contact": from_header,
         }
 
-        body = f"Signal={signal}\r\nDuration={duration}\r\n"
+        body = f"Signal={signal}\r\nDuration={duration}"
         data = build_request("INFO", to_header, headers=headers, body=body)
         self.transport.sendto(data, addr)
-        log_sip_event("INFO_SENT", addr=f"{addr}", call_id=call_id)
+        log_sip_event("INFO_SENT", addr=f"{addr}", call_id=call_id, request=data)
 
     async def send_bye(self, call_id: str) -> None:
         """Send BYE response."""
@@ -717,7 +735,8 @@ class MiniSIPServer:
 
     async def handle_datagram(self, data: bytes, addr: (str, int)) -> None:
         """Handle a raw UDP datagram."""
-        start_line, method, headers = parse_sip_message(data)
+        start_line, method, headers, content = parse_sip_message(data)
+        log_sip_event(method, addr=f"{addr}", headers=headers, content=content)
 
         # Delegate response to pending_invites
         if start_line.startswith("SIP/2.0"):
@@ -727,8 +746,6 @@ class MiniSIPServer:
                 fut = self.pending_invites.pop(call_id)
                 if not fut.done():
                     fut.set_result(headers)
-            else:
-                log_sip_event("GOT SIP/2.0 without pending_invites", headers=headers)
             return
 
         if method == "REGISTER":
