@@ -26,3 +26,6 @@ send_sip_info_dtmf:
       required: false
       selector:
         text:
+
+get_active_calls:
+  fields: {}
