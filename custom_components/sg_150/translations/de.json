@@ -115,7 +115,7 @@
             "fields": {
                 "to": {
                     "name": "Telefonnummer die Angerufen wird.",
-                    "description": "Die vollständige Telefonnummer (mit Präfix) welche im In-Home System angerufen wird."
+                    "description": "Die vollständige Telefonnummer (mit Präfix, ohne Leerzeichen) welche im In-Home System angerufen wird."
                 }
             }
         },
