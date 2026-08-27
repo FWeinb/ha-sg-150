@@ -47,20 +47,36 @@ def setup_services(
         return {"call_id": call_id, "error": None}
 
     @callback
-    async def handle_stop_call(call: ServiceCall) -> None:
+    async def handle_stop_call(call: ServiceCall) -> ServiceResponse | None:
         """Handle the service action call."""
         call_id = call.data.get("call_id")
         if call_id:
-            await server.send_bye(call_id)
+            try:
+                await server.send_bye(call_id)
+            except ValueError as e:
+                return {"error": str(e)} if call.return_response else None
+            return {"success": True, "error": None} if call.return_response else None
+
+        return {"error": "No call_id supplied"} if call.return_response else None
 
     @callback
-    async def handle_send_sip_info_dtmf(call: ServiceCall) -> None:
+    async def handle_send_sip_info_dtmf(call: ServiceCall) -> ServiceResponse | None:
         """Handle the DTMF signal call."""
         call_id = call.data.get("call_id")
         signal = call.data.get("signal")
         duration = call.data.get("duration") or "100"
         if call_id and signal:
-            await server.send_sip_info_dtmf(call_id, signal, duration)
+            try:
+                await server.send_sip_info_dtmf(call_id, signal, duration)
+            except ValueError as e:
+                return {"error": str(e)} if call.return_response else None
+            return {"success": True, "error": None} if call.return_response else None
+
+        return (
+            {"error": "Missing mandatory call_id or signal"}
+            if call.return_response
+            else None
+        )
 
     @callback
     async def handle_get_active_calls(_: ServiceCall) -> ServiceResponse:
@@ -79,13 +95,13 @@ def setup_services(
         DOMAIN,
         "stop_call",
         handle_stop_call,
-        supports_response=SupportsResponse.NONE,
+        supports_response=SupportsResponse.OPTIONAL,
     )
     hass.services.async_register(
         DOMAIN,
         "send_sip_info_dtmf",
         handle_send_sip_info_dtmf,
-        supports_response=SupportsResponse.NONE,
+        supports_response=SupportsResponse.OPTIONAL,
     )
     hass.services.async_register(
         DOMAIN,
