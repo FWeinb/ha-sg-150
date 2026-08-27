@@ -115,7 +115,7 @@
             "fields": {
                 "to": {
                     "name": "Number To Call",
-                    "description": "The full phone number (including the prefix) to be called via the In-Home system"
+                    "description": "The full phone number (including the prefix, without spaces) to be called via the In-Home system"
                 }
             }
         },

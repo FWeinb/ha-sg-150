@@ -11,9 +11,11 @@ Currently the integration exposes:
   - Phone number sensor
 - All video extractors
   - Camera for the live stream
-- Services:
+- Actions to control the SG-150:
   - start_call: Start a phone call within the In-Home system
   - stop_call: Stop a phone call within the In-Home system
+  - send_sip_info_dtmf: Sends a DTMF signal to the Siedle Gateway during an In-Home phone call
+  - get_active_calls: Returns a list of active call IDs.
 
 # Disclaimer
 
@@ -84,3 +86,37 @@ These values will be used to configure the SG-150 to connect to the SIP-Server p
 1. Click on "Save/Create"
 
 > In HomeAssistant you should now see a new camera entity representing the video stream of this TC phone. You might need to reload the integration to see the new entity.
+
+
+## Limitations
+
+The In-Home bus has a single speech/video channel. While Home Assistant holds a call, a indoor stations get a busy tone and no image. So an automation that grabs the channel on every doorbell press will interfere with such a system.
+
+## Scripts 
+
+### Sending DTMF signals
+
+> Sending DTMF signals with a delay will result in the SG-150 ignoring the signal. So a script that sends multiple signals in a row should be used.
+Sending DTMF signals to the first active call can be done using the following script:
+
+
+```yaml
+sequence:
+  - action: sg_150.get_active_calls
+    response_variable: calls
+  - variables:
+      cid: "{{ calls.active_calls[0] }}"
+  - action: sg_150.send_sip_info_dtmf
+    data: {call_id: "{{ cid }}", signal: "#", duration: "100"}
+  - action: sg_150.send_sip_info_dtmf
+    data: {call_id: "{{ cid }}", signal: "6", duration: "100"}
+  - action: sg_150.send_sip_info_dtmf
+    data: {call_id: "{{ cid }}", signal: "1", duration: "100"}
+```
+
+This scripts sends the DTMF signals `#61`. You can change the `signal` value to send different signals. To see what signals are supported by your SG-150 you can check **Basic Settings** -> **DTMF** in the SG-150 web interface.
+
+
+# Acknowledgements
+
+Thanks to [@DaPat78](https://github.com/DaPat78) for validating the DTMF implementation with real hardware. (See [#79](https://github.com/FWeinb/ha-sg-150/pull/79))
