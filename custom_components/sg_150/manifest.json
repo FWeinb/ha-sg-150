@@ -9,5 +9,9 @@
   "integration_type": "hub",
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/fweinb/ha-sg-150/issues",
+  "requirements": [
+    "soundfile==0.13.1",
+    "numpy==2.3.2"
+  ],
   "version": "0.1.0"
 }

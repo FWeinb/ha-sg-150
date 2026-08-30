@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
+from homeassistant.components import media_source
 from homeassistant.core import ServiceCall, ServiceResponse, SupportsResponse, callback
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import (
     CONF_SIP_NUMBER,
     CONF_SIP_USER,
     DOMAIN,
+    LOGGER,
 )
 
 if TYPE_CHECKING:
@@ -19,7 +23,10 @@ if TYPE_CHECKING:
     from .sip.minisip import MiniSIPServer
 
 
-def setup_services(
+BAD_REQUEST_START: int = 400
+
+
+def setup_services(  # noqa: PLR0915
     hass: HomeAssistant, entry: SG150ConfigEntry, server: MiniSIPServer
 ) -> None:
     """Setups the HA services."""
@@ -78,6 +85,66 @@ def setup_services(
             else None
         )
 
+    async def _fetch_media_source_audio(media_source_id: str) -> tuple[str, bytes]:
+        """Resolve a generic Home Assistant media source and fetch its audio bytes."""
+        resolved = await media_source.async_resolve_media(
+            hass, media_source_id, target_media_player=None
+        )
+        # Always try local `path` first
+        if resolved.path is not None:
+            media_path = Path(resolved.path)
+            if not await hass.async_add_executor_job(media_path.exists):
+                msg = f"Resolved media path does not exist: {media_path}"
+                raise ValueError(msg)
+
+            LOGGER.debug("Got media path: '%s'", media_path)
+
+            return resolved.mime_type, await hass.async_add_executor_job(
+                media_path.read_bytes
+            )
+
+        # If non is found try resolved.url
+        if not resolved.url:
+            msg = "Media source did not resolve to a playable URL"
+            raise ValueError(msg)
+
+        session = async_get_clientsession(hass)
+
+        async with session.get(resolved.url) as response:
+            if response.status >= BAD_REQUEST_START:
+                request_error = (
+                    f"Media source request failed with status {response.status}"
+                )
+                raise ValueError(request_error)
+
+            return resolved.mime_type, await hass.async_add_executor_job(response.read)
+
+    @callback
+    async def handle_play_audio(call: ServiceCall) -> ServiceResponse | None:
+        """Send any media source audio to the active call."""
+        call_id = call.data.get("call_id")
+        if not call_id:
+            return (
+                {"error": "Missing mandatory call_id"} if call.return_response else None
+            )
+
+        media_source_id = call.data.get("media_source_id")
+        if not media_source_id:
+            return (
+                {"error": "Missing mandatory media_source_id"}
+                if call.return_response
+                else None
+            )
+
+        try:
+            LOGGER.debug("_fetch media for source_id=%s", media_source_id)
+            mime_type, data = await _fetch_media_source_audio(media_source_id)
+            await server.play_audio(call_id, mime_type, data)
+        except ValueError as err:
+            return {"error": str(err)} if call.return_response else None
+
+        return {"success": True, "error": None} if call.return_response else None
+
     @callback
     async def handle_get_active_calls(_: ServiceCall) -> ServiceResponse:
         """Handle the get active calls service."""
@@ -108,4 +175,10 @@ def setup_services(
         "get_active_calls",
         handle_get_active_calls,
         supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        "play_audio",
+        handle_play_audio,
+        supports_response=SupportsResponse.OPTIONAL,
     )

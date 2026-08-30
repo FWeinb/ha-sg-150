@@ -11,12 +11,16 @@ import asyncio
 import base64
 import contextlib
 import hashlib
+import io
 import logging
 import os
 import random
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+
+import numpy as np
+import soundfile as sf
 
 logger = logging.getLogger("sip-server")
 
@@ -82,6 +86,66 @@ STANDARD_HEADERS = {
 }
 
 
+TARGET_SAMPLE_RATE = 8000
+
+
+def _pcm_to_pcma(pcm: np.ndarray) -> bytes:
+    """Convert int16 PCM samples to G.711 A-law payload bytes."""
+    pcm_array = np.asarray(pcm, dtype=np.int16)
+    if pcm_array.size == 0:
+        return b""
+
+    buffer = io.BytesIO()
+    sf.write(buffer, pcm_array, TARGET_SAMPLE_RATE, format="RAW", subtype="ALAW")
+    return buffer.getvalue()
+
+
+def _resample_pcm(pcm: np.ndarray, sample_rate: int) -> np.ndarray:
+    """Resample int16 PCM to 8 kHz using NumPy interpolation."""
+    pcm_array = np.asarray(pcm, dtype=np.float64)
+    if sample_rate == TARGET_SAMPLE_RATE:
+        return pcm_array.astype(np.int16, copy=False)
+    if sample_rate <= 0:
+        msg = f"Unsupported sample rate: {sample_rate}"
+        raise ValueError(msg)
+
+    target_samples = max(1, round(len(pcm_array) * TARGET_SAMPLE_RATE / sample_rate))
+    old_x = np.arange(len(pcm_array), dtype=np.float64)
+    new_x = np.linspace(0, len(pcm_array) - 1, num=target_samples, dtype=np.float64)
+    resampled = np.interp(new_x, old_x, pcm_array)
+    return np.clip(resampled, -32768, 32767).astype(np.int16)
+
+
+def convert_audio_to_pcma(audio_data: bytes, mime_type: str) -> bytes:
+    """Convert a media payload to 8 kHz mono G.711 a-law data."""
+    if not audio_data:
+        msg = "No audio data provided."
+        raise ValueError(msg)
+
+    if not mime_type:
+        msg = "No mime_type provided."
+        raise ValueError(msg)
+
+    mime_type = mime_type.lower().strip()
+
+    if mime_type in {
+        "audio/ogg",
+        "audio/wav",
+        "audio/x-wav",
+        "audio/mpeg",
+        "audio/mp3",
+    }:
+        wav_buffer = io.BytesIO(audio_data)
+        samples, sample_rate = sf.read(wav_buffer, dtype="int16", always_2d=False)
+        if np.asarray(samples).ndim > 1:
+            samples = samples[:, 0]
+        pcm = _resample_pcm(samples, int(sample_rate))
+        return _pcm_to_pcma(pcm)
+
+    _msg = f"Unsupported audio media type: {mime_type}"
+    raise ValueError(_msg)
+
+
 def normalize_headers(headers: dict[str, str]) -> dict[str, str]:
     """
     Normalize header keys.
@@ -99,14 +163,21 @@ def normalize_headers(headers: dict[str, str]) -> dict[str, str]:
     return normalized
 
 
-def parse_sip_message(data: bytes) -> (str, str, dict[str, str], list[str]):
-    """Parse the SIP package an returns the decoded values."""
+def parse_sip_message(data: bytes) -> (str, dict[str, str]):
+    """
+    Parse the SIP package and return the decoded values.
+
+    Returns:
+        method: The SIP method (e.g., INVITE, REGISTER, BYE).
+        message: A dictionary containing the parsed SIP headers and body.
+
+    """
     text = data.decode(errors="ignore")
     lines = text.split("\r\n")
     start_line = lines[0]
     method = start_line.split(" ", 1)[0].upper()
     raw_headers = {}
-    content = []
+    body = []
     header_section = True
     for line in lines[1:]:
         if line == "":
@@ -118,16 +189,21 @@ def parse_sip_message(data: bytes) -> (str, str, dict[str, str], list[str]):
                 k, v = line.split(":", 1)
                 raw_headers[k.strip()] = v.strip()
         else:
-            content.append(line)
+            body.append(line)
 
-    headers = normalize_headers(raw_headers)
-    return start_line, method, headers, content
+    message = normalize_headers(raw_headers)
+    if body:
+        message[":body"] = "\r\n".join(body)
+
+    message[":start_line"] = start_line
+
+    return method, message
 
 
 def build_response(
     code: str,
     reason: str,
-    headers: dict[str, str],
+    message: dict[str, str],
     extra_headers: list[str] | None = None,
     body: str | None = None,
 ) -> str:
@@ -137,17 +213,17 @@ def build_response(
 
     resp_lines = [
         f"SIP/2.0 {code} {reason}",
-        f"Via: {headers.get('Via', '')}",
-        f"From: {headers.get('From', '')}",
-        f"To: {headers.get('To', '')}",
-        f"Call-ID: {headers.get('Call-ID', '')}",
-        f"CSeq: {headers.get('CSeq', '')}",
+        f"Via: {message.get('Via', '')}",
+        f"From: {message.get('From', '')}",
+        f"To: {message.get('To', '')}",
+        f"Call-ID: {message.get('Call-ID', '')}",
+        f"CSeq: {message.get('CSeq', '')}",
         f"Content-Length: {body_length}",
         "Server: MiniSIP",
     ]
 
-    if "Contact" in headers:
-        resp_lines.append(f"Contact: {headers.get('Contact')}")
+    if "Contact" in message:
+        resp_lines.append(f"Contact: {message.get('Contact')}")
 
     if extra_headers:
         resp_lines.extend(extra_headers)
@@ -219,6 +295,7 @@ class MiniSIPServer:
         self.challenges = {}
         self.pending_invites = {}
         self.active_calls = {}
+        self.rtp_sessions = {}
         self.last_cseq = {}
         self.transport = None
 
@@ -384,10 +461,94 @@ class MiniSIPServer:
 
         return num, method
 
-    def check_cseq(self, headers: dict[str, str], addr: (str, int)) -> bool:
+    @staticmethod
+    def parse_sdp_media(sdp: str | None) -> dict[str, any] | None:  # noqa: PLR0912
+        """Parse SDP media metadata from a SIP SDP body."""
+        if not sdp:
+            return None
+
+        media: dict[str, any] = {
+            "ip": None,
+            "port": None,
+            "payload_type": None,
+            "codec": None,
+            "ptime": None,
+            "direction": "sendrecv",
+        }
+        codec_by_pt: dict[int, str] = {}
+        payload_types: list[int] = []
+
+        for line in sdp.splitlines():
+            if not line:
+                continue
+
+            if line.startswith("c="):
+                parts = line.split()
+                if len(parts) >= 3:  # noqa: PLR2004
+                    media["ip"] = parts[2]
+            elif line.startswith("m="):
+                parts = line.split()
+                if len(parts) >= 4 and parts[0] == "m=audio":  # noqa: PLR2004
+                    try:
+                        media["port"] = int(parts[1])
+                    except ValueError:
+                        media["port"] = None
+                    payload_types = [
+                        int(part)
+                        for part in parts[3:]
+                        if part.isdigit() and part != "0"
+                    ]
+            elif line.startswith("a=rtpmap:"):
+                parts = line.split()
+                if len(parts) >= 2:  # noqa: PLR2004
+                    pt = parts[0].split(":", 1)[1]
+                    try:
+                        payload_type = int(pt)
+                    except ValueError:
+                        continue
+                    codec_name = parts[1].split("/", 1)[0]
+                    codec_by_pt[payload_type] = codec_name
+            elif line.startswith("a=ptime:"):
+                try:
+                    media["ptime"] = int(line.split(":", 1)[1].strip())
+                except ValueError:
+                    media["ptime"] = None
+            elif line.startswith("a=") and line[2:].strip().lower() in {
+                "sendrecv",
+                "sendonly",
+                "recvonly",
+                "inactive",
+            }:
+                media["direction"] = line[2:].strip().lower()
+
+        for payload_type in payload_types:
+            if (
+                payload_type in codec_by_pt
+                and codec_by_pt[payload_type].upper() == "PCMA"
+            ):
+                media["payload_type"] = payload_type
+                media["codec"] = codec_by_pt[payload_type].upper()
+                break
+
+        if media["payload_type"] is None and payload_types:
+            for payload_type in payload_types:
+                if (
+                    payload_type in codec_by_pt
+                    and "event" not in codec_by_pt[payload_type].lower()
+                ):
+                    media["payload_type"] = payload_type
+                    media["codec"] = codec_by_pt[payload_type].upper()
+                    break
+            if media["payload_type"] is None:
+                media["payload_type"] = payload_types[0]
+                media["codec"] = codec_by_pt.get(payload_types[0], "UNKNOWN").upper()
+
+        return media
+
+    def check_cseq(self, message: dict[str, str], addr: (str, int)) -> bool:
         """Check the CSeq is valid and store it."""
-        call_id = headers.get("Call-ID")
-        cseq_header = headers.get("CSeq", "")
+        call_id = message.get("Call-ID")
+        cseq_header = message.get("CSeq", "")
         cseq_num, _ = self.parse_cseq(cseq_header)
         if call_id and cseq_num is not None:
             last_num = self.last_cseq.get(call_id, -1)
@@ -403,7 +564,7 @@ class MiniSIPServer:
             self.last_cseq[call_id] = cseq_num
         return True
 
-    def create_unauthorized_response(self, headers: dict[str, str]) -> str:
+    def create_unauthorized_response(self, message: dict[str, str]) -> str:
         """Create an unauthorized response."""
         nonce = self.generate_nonce()
         opaque = self.challenges[nonce] = generate_opaque()
@@ -411,21 +572,21 @@ class MiniSIPServer:
         return build_response(
             401,
             "Unauthorized",
-            headers,
+            message,
             extra_headers=[
                 f'WWW-Authenticate: Digest realm="{self.realm}", nonce="{nonce}", opaque="{opaque}", algorithm=MD5, qop="auth"'  # noqa: E501
             ],
         )
 
-    async def handle_register(self, headers: dict[str, str], addr: (str, int)) -> None:
+    async def handle_register(self, message: dict[str, str], addr: (str, int)) -> None:
         """Handle the REGISTER method."""
-        if not self.check_cseq(headers, addr):
-            self.transport.sendto(build_response(400, "Bad Request", headers), addr)
+        if not self.check_cseq(message, addr):
+            self.transport.sendto(build_response(400, "Bad Request", message), addr)
             return
 
-        auth_header = headers.get("Authorization")
+        auth_header = message.get("Authorization")
         if not auth_header:
-            self.transport.sendto(self.create_unauthorized_response(headers), addr)
+            self.transport.sendto(self.create_unauthorized_response(message), addr)
             return
 
         auth = self.parse_authorization(auth_header)
@@ -437,10 +598,10 @@ class MiniSIPServer:
                 nonce=auth.get("nonce") if auth else None,
                 opaque=auth.get("opaque") if auth else None,
             )
-            self.transport.sendto(self.create_unauthorized_response(headers), addr)
+            self.transport.sendto(self.create_unauthorized_response(message), addr)
             return
 
-        expires = self.parse_expires(headers)
+        expires = self.parse_expires(message)
         username = auth.get("username")
 
         self.registrations[username] = {
@@ -459,19 +620,19 @@ class MiniSIPServer:
             build_response(
                 200,
                 "OK",
-                headers,
+                message,
                 extra_headers=[f"Expires: {expires}"],
             ),
             addr,
         )
 
-    async def handle_invite(self, headers: dict[str, str], addr: (str, int)) -> None:
+    async def handle_invite(self, message: dict[str, str], addr: (str, int)) -> None:
         """Handle the INVITE method."""
-        call_id = headers.get("Call-ID")
+        call_id = message.get("Call-ID")
         call_context = CallContext(
             call_id=call_id,
-            called_from=headers.get("From"),
-            called_to=headers.get("To"),
+            called_from=message.get("From"),
+            called_to=message.get("To"),
             addr=addr,
         )
 
@@ -485,10 +646,10 @@ class MiniSIPServer:
             # Update headers to create a valid response with a tag in the To header
             # and a Contact header that matches the To header we assume we always want
             # to accept it.
-            headers["Contact"] = headers.get("To")
-            headers["To"] = f"{headers.get('To')};tag=minisip"
+            message["Contact"] = message.get("To")
+            message["To"] = f"{message.get('To')};tag=minisip"
 
-            ringing_resp = build_response(180, "Ringing", headers)
+            ringing_resp = build_response(180, "Ringing", message)
             self.transport.sendto(ringing_resp, addr)
             await self._fire_event("on_call_ringing", call_id, addr)
             log_sip_event("CALL_RINGING_SENT", addr=f"{addr}", call_id=call_id)
@@ -510,7 +671,7 @@ class MiniSIPServer:
             resp = build_response(
                 200,
                 "OK",
-                headers,
+                message,
                 extra_headers=[
                     "Content-Type: application/sdp",
                 ],
@@ -518,34 +679,45 @@ class MiniSIPServer:
             )
 
             self.transport.sendto(resp, addr)
-            self.active_calls[call_id] = (addr, headers.get("From"), headers.get("To"))
+
+            media = self.parse_sdp_media(message.get(":body"))
+            self.active_calls[call_id] = (
+                addr,
+                message.get("From"),
+                message.get("To"),
+                message.get("Contact"),
+                media or {},
+            )
+
+            # This is very optimistic as we did not recive the ACK here
+            # a better way would be to only fire this when the ACK was recived.
             await self._fire_event("on_call_established", call_id, addr)
             log_sip_event("INCOMING_CALL_ACCEPTED", addr=f"{addr}", call_id=call_id)
         else:
-            resp = build_response(486, "Busy Here", headers)
+            resp = build_response(486, "Busy Here", message)
             self.transport.sendto(resp, addr)
             log_sip_event("INCOMING_CALL_REJECTED", addr=f"{addr}", call_id=call_id)
             await self._fire_event("on_call_busy", call_id, addr)
 
-    async def handle_bye(self, headers: dict[str, str], addr: (str, int)) -> None:
+    async def handle_bye(self, message: dict[str, str], addr: (str, int)) -> None:
         """Handle the BYE method."""
-        call_id = headers.get("Call-ID")
+        call_id = message.get("Call-ID")
 
-        self.transport.sendto(build_response(200, "OK", headers), addr)
+        self.transport.sendto(build_response(200, "OK", message), addr)
         if call_id in self.active_calls:
             self.active_calls.pop(call_id)
             await self._fire_event("on_call_ended", call_id)
 
-    async def handle_options(self, headers: dict[str, str], addr: (str, int)) -> None:
+    async def handle_options(self, message: dict[str, str], addr: (str, int)) -> None:
         """Handle the OPTIONS method."""
-        if not self.check_cseq(headers, addr):
-            return build_response(400, "Bad Request", headers)
+        if not self.check_cseq(message, addr):
+            return build_response(400, "Bad Request", message)
 
         self.transport.sendto(
             build_response(
                 200,
                 "OK",
-                headers,
+                message,
                 extra_headers=[
                     "Allow: REGISTER, ACK, INVITE",
                     "Accept: application/sdp",
@@ -577,6 +749,8 @@ class MiniSIPServer:
             "m=audio 5005 RTP/AVP 8\r\n"
             "a=rtpmap:8 PCMA/8000\r\n"
             "a=fmtp:8 0-15\r\n"
+            "a=ptime:20\r\n"
+            "a=sendonly"
         )
 
         call_id = self.new_call_id()
@@ -637,11 +811,13 @@ class MiniSIPServer:
                     call_state["status"] = "CONNECTED"
                     call_state["final"] = True
                     await self.send_ack(headers_resp, target_addr)
+                    media = self.parse_sdp_media(headers_resp.get(":body"))
                     self.active_calls[call_id] = (
                         target_addr,
                         orig_from,
                         headers_resp.get("To"),
                         headers_resp.get("Contact"),
+                        media or {},
                     )
                     await self._fire_event("on_call_established", call_id, target_addr)
                     return call_id, headers_resp
@@ -682,6 +858,63 @@ class MiniSIPServer:
         data = build_request("ACK", to_address, headers=headers)
         self.transport.sendto(data, target_addr)
         log_sip_event("ACK_SENT", addr=f"{target_addr}", call_id=call_id)
+
+    async def send_rtp_audio(self, call_id: str, payload: bytes) -> None:
+        """Send a raw PCMA RTP payload to the negotiated media socket."""
+        if call_id not in self.active_calls:
+            _msg = f"There is currently no active call with call id: {call_id}"
+            raise ValueError(_msg)
+
+        call_state = self.active_calls[call_id]
+        media = call_state[4] if len(call_state) > 4 else None  # noqa: PLR2004
+        if not media:
+            _msg = f"No negotiated RTP media for call id: {call_id}"
+            raise ValueError(_msg)
+
+        if not payload:
+            return
+
+        remote_ip = media.get("ip")
+        remote_port = media.get("port")
+        payload_type = media.get("payload_type", 8)
+        if not remote_ip or remote_port is None:
+            _msg = f"No RTP media endpoint available for call id: {call_id}"
+            raise ValueError(_msg)
+
+        session = self.rtp_sessions.setdefault(
+            call_id,
+            {
+                "seq": 0,
+                "timestamp": 0,
+            },
+        )
+        seq = session["seq"]
+        timestamp = session["timestamp"]
+        ssrc = 0x12345678
+
+        packet = bytearray(12 + len(payload))
+        packet[0] = 0x80
+        packet[1] = payload_type & 0x7F
+        packet[2] = (seq >> 8) & 0xFF
+        packet[3] = seq & 0xFF
+        packet[4:8] = timestamp.to_bytes(4, byteorder="big", signed=False)
+        packet[8:12] = ssrc.to_bytes(4, byteorder="big", signed=False)
+        packet[12:] = payload
+
+        self.transport.sendto(bytes(packet), (remote_ip, remote_port))
+        session["seq"] = (seq + 1) & 0xFFFF
+        session["timestamp"] = (timestamp + len(payload)) & 0xFFFFFFFF
+
+    async def play_audio(self, call_id: str, mime_type: str, audio_data: bytes) -> None:
+        """Send media audio to the negotiated RTP endpoint."""
+        pcma = convert_audio_to_pcma(audio_data, mime_type)
+        if not pcma:
+            return
+
+        chunk_size = 160
+        for offset in range(0, len(pcma), chunk_size):
+            await asyncio.sleep(0.02)
+            await self.send_rtp_audio(call_id, pcma[offset : offset + chunk_size])
 
     async def send_sip_info_dtmf(
         self, call_id: str, signal: str, duration: str
@@ -735,32 +968,31 @@ class MiniSIPServer:
 
     async def handle_datagram(self, data: bytes, addr: (str, int)) -> None:
         """Handle a raw UDP datagram."""
-        start_line, method, headers, content = parse_sip_message(data)
-        log_sip_event(method, addr=f"{addr}", headers=headers, content=content)
+        method, message = parse_sip_message(data)
+        log_sip_event(method, addr=f"{addr}", message=message)
 
         # Delegate response to pending_invites
-        if start_line.startswith("SIP/2.0"):
-            headers[":start_line"] = start_line
-            call_id = headers.get("Call-ID")
+        if message[":start_line"].startswith("SIP/2.0"):
+            call_id = message.get("Call-ID")
             if call_id in self.pending_invites:
                 fut = self.pending_invites.pop(call_id)
                 if not fut.done():
-                    fut.set_result(headers)
+                    fut.set_result(message)
             return
 
         if method == "REGISTER":
-            await self.handle_register(headers, addr)
+            await self.handle_register(message, addr)
         elif method == "INVITE":
-            await self.handle_invite(headers, addr)
+            await self.handle_invite(message, addr)
         elif method == "BYE":
-            await self.handle_bye(headers, addr)
+            await self.handle_bye(message, addr)
         elif method == "OPTIONS":
-            await self.handle_options(headers, addr)
+            await self.handle_options(message, addr)
         elif method == "ACK":
             pass
         else:
             log_sip_event("SIP_METHOD_NOT_IMPLEMENTED", addr=f"{addr}", method=method)
-            resp = build_response(501, "Not Implemented", headers)
+            resp = build_response(501, "Not Implemented", message)
             self.transport.sendto(resp, addr)
 
     async def start(self) -> None:

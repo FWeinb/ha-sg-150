@@ -5,3 +5,5 @@ pytest==8.4.1
 pytest-asyncio==1.1.0
 ruff==0.16.5
 pydantic==2.13.4
+soundfile==0.13.1
+numpy==2.3.2
