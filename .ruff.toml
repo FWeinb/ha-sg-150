@@ -12,6 +12,7 @@ ignore = [
     "COM812", # incompatible with formatter
     "ISC001", # incompatible with formatter
     "CPY001", # license header in ever file
+    "TRY003", # okay for home-assistant to use bare except
 ]
 
 [lint.flake8-pytest-style]
@@ -22,3 +23,11 @@ keep-runtime-typing = true
 
 [lint.mccabe]
 max-complexity = 25
+
+[lint.extend-per-file-ignores]
+"tests/**/*.py" = [
+    "S101", # asserts allowed in tests...
+    "ARG", # Unused function args
+    "FBT", # Don't care about booleans as positional arguments in tests, e.g. via @pytest.mark.parametrize()
+    "PLR2004", # Magic value used in comparison,
+]
