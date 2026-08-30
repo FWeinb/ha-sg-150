@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import socket
 from hashlib import sha256
 from time import time
 from typing import Any
 
 import aiohttp
-import async_timeout
 
 from .const import LOGGER
 from .types import OAuthTokenResponse, SG150Devices, SG150MaschineInfo
@@ -128,7 +128,7 @@ class SG150ApiClient:
                         "Authorization": f"Bearer {self._access_token}",
                     }
                 )
-            async with async_timeout.timeout(10):
+            async with asyncio.timeout(10):
                 response = await self._session.request(
                     method=method,
                     url=f"http://{self._host_address}:{self._port}/api/op/v1.0/{route}",
