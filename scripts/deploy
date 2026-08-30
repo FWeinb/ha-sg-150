@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+
+set -e
+
+cd "$(dirname "$0")/.."
+
+ssh luna-docker "sudo rm -rf /root/services/homeassistant/custom_components/sg_150"
+rsync -av --exclude='*.pyc' ./custom_components/sg_150 luna-docker:/tmp
+ssh luna-docker "sudo mv /tmp/sg_150 /root/services/homeassistant/custom_components/ && sudo chown root:root /root/services/homeassistant/custom_components/sg_150"

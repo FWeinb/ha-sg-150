@@ -151,6 +151,20 @@
             "name": "Aktive Anrufe abfragen",
             "description": "Gibt eine Liste der aktiven Anrufsidentifkiatonen zurück.",
             "fields": {}
+        },
+        "play_audio": {
+            "name": "Spiele eine Audiodatei",
+            "description": "Spiele eine Audiodatei ab,",
+            "fields": {
+                "call_id": {
+                    "name": "Identifkation des Anrufes",
+                    "description": "Die Anrufsidentifkiaton von einem vorher gestarteten Anruf."
+                },
+                "media_source_id": {
+                    "name": "Media Quellen Identifikation",
+                    "description": "Eine Homessistant Quellen Identifikatio "
+                }
+            }
         }
     }
 }

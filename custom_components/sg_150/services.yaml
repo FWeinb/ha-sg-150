@@ -27,5 +27,16 @@ send_sip_info_dtmf:
       selector:
         text:
 
+play_audio:
+  fields:
+    call_id:
+      required: true
+      selector:
+        text:
+    media_source_id:
+      required: true
+      selector:
+        text:
+
 get_active_calls:
   fields: {}

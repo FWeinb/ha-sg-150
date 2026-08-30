@@ -16,6 +16,7 @@ Currently the integration exposes:
   - stop_call: Stop a phone call within the In-Home system
   - send_sip_info_dtmf: Sends a DTMF signal to the Siedle Gateway during an In-Home phone call
   - get_active_calls: Returns a list of active call IDs.
+  - play_audio: Play a media_source_id to an active call (Supporting wav/mp3, see [Tips & Tricks](#tips--tricks)) 
 
 # Disclaimer
 
@@ -92,7 +93,9 @@ These values will be used to configure the SG-150 to connect to the SIP-Server p
 
 The In-Home bus has a single speech/video channel. While Home Assistant holds a call, a indoor stations get a busy tone and no image. So an automation that grabs the channel on every doorbell press will interfere with such a system.
 
-## Scripts 
+This also applies to the fact that you won't be able to call the Door if a call is already in progress. So you can't start a direct door call while someone is ringing.
+
+## Tips & Tricks 
 
 ### Sending DTMF signals
 
@@ -116,6 +119,18 @@ sequence:
 
 This scripts sends the DTMF signals `#61`. You can change the `signal` value to send different signals. To see what signals are supported by your SG-150 you can check **Basic Settings** -> **DTMF** in the SG-150 web interface.
 
+
+### Playing TTS Audio on the Doorbell
+
+The following action can be used play the tts audio on the doorbell.
+Make sure to url encode the `<<message>>` and replace `<<call-id>>` and `<<tts-service>>` with suitable values in your HA configuration. 
+
+```yaml
+action: sg_150.play_audio
+data: 
+  call_id: <<call-id>>
+  media_source_id: "media-source://tts/tts.<<tts-service>>?message=<<message>>&language=en"
+```
 
 # Acknowledgements
 

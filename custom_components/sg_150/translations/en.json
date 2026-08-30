@@ -151,6 +151,20 @@
             "name": "Get Active Calls",
             "description": "Returns a list of active call IDs.",
             "fields": {}
+        },
+        "play_audio": {
+            "name": "Play Audio",
+            "description": "Play an audio stream from an Media Source ID",
+            "fields": {
+                "call_id": {
+                    "name": "Call Identifier",
+                    "description": "The call id from a previous started phone call"
+                },
+                "media_source_id": {
+                    "name": "Media Source ID",
+                    "description": "Existing Home Assistant media source ID for speech audio"
+                }
+            }
         }
     }
 }
