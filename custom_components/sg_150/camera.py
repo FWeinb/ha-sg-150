@@ -32,8 +32,11 @@ if TYPE_CHECKING:
     from .types import SG150Device
 
 
-TIMEOUT = 10
-BUFFER_SIZE = 102400
+TIMEOUT = 5
+
+# During testing, the first two frames of the stream are the "no stream" image.
+# To avoid returning this, we wait for a few frames before returning a still image
+FRAME_WAIT_COUNT = 3
 
 
 async def async_setup_entry(
@@ -65,29 +68,46 @@ async def async_setup_entry(
     async_add_entities(entites)
 
 
-async def _async_extract_image_from_mjpeg(stream: AsyncIterator[bytes]) -> bytes | None:
-    """Take in a MJPEG stream object, return the jpg from it."""
+async def _async_extract_image_from_mjpeg(
+    stream: AsyncIterator[bytes],
+) -> bytes | None:
+    """
+    Take in MJPEG stream and extract a frame from it.
+
+    The first FRAME_WAIT_COUNT frames are ignored, as they are usually the "no stream"
+    image.
+    """
     data = b""
+    frame_count = 0
 
     async for chunk in stream:
         data += chunk
-        jpg_end = data.find(b"\xff\xd9")
 
-        if jpg_end == -1:
-            continue
+        while True:
+            jpg_start = data.find(b"\xff\xd8")
+            if jpg_start == -1:
+                data = data[-1:]
+                break
 
-        jpg_start = data.find(b"\xff\xd8")
+            jpg_end = data.find(b"\xff\xd9", jpg_start + 2)
+            if jpg_end == -1:
+                if jpg_start:
+                    data = data[jpg_start:]
+                break
 
-        if jpg_start == -1:
-            continue
+            frame = data[jpg_start : jpg_end + 2]
+            data = data[jpg_end + 2 :]
 
-        return data[jpg_start : jpg_end + 2]
+            frame_count += 1
+
+            if frame_count >= FRAME_WAIT_COUNT:
+                return frame
 
     return None
 
 
 class SG150Camera(Camera):  # pylint: disable=abstract-method
-    """Camera Entity for SG150 MJPEG Stream."""
+    """Camera Entity for SG150 Stream."""
 
     _attr_has_entity_name = True
     _attr_translation_key = "camera"
@@ -105,9 +125,9 @@ class SG150Camera(Camera):  # pylint: disable=abstract-method
     ) -> None:
         """Initialize the doorbell event entity."""
         super().__init__()
-        self._mjpeg_url = url
+        self._stream_url = url
         self._minisip = minisip
-        self._attr_is_on = False
+        self._attr_is_streaming = False
         self._attr_unique_id = device.id + "Camera"
         self._attr_device_info = DeviceInfo(
             identifiers={(coordinator.config_entry.domain, device.id)},
@@ -121,7 +141,7 @@ class SG150Camera(Camera):  # pylint: disable=abstract-method
         # Assume this camera is active when there is any active call
         # technically we would need to check if there is a call to this specific camera
         # but i don't have the info here yet...
-        self._attr_is_on = bool(self._minisip.active_calls)
+        self._attr_is_streaming = bool(self._minisip.active_calls)
         self.async_write_ha_state()
 
     async def async_added_to_hass(self) -> None:
@@ -139,7 +159,7 @@ class SG150Camera(Camera):  # pylint: disable=abstract-method
 
     async def stream_source(self) -> str:
         """Return the stream source, also used by HomeKit to support MJEPG streams."""
-        return self._mjpeg_url
+        return self._stream_url
 
     async def async_camera_image(
         self,
@@ -149,10 +169,10 @@ class SG150Camera(Camera):  # pylint: disable=abstract-method
         """Return a still image response from the camera."""
         try:
             client = get_async_client(self.hass)
-            async with client.stream("get", self._mjpeg_url, timeout=TIMEOUT) as stream:
-                return await _async_extract_image_from_mjpeg(
-                    stream.aiter_bytes(BUFFER_SIZE)
-                )
+            async with client.stream(
+                "get", self._stream_url, timeout=TIMEOUT
+            ) as stream:
+                return await _async_extract_image_from_mjpeg(stream.aiter_raw())
 
         except TimeoutError:
             LOGGER.error("Timeout getting camera image from %s", self.name)
@@ -165,7 +185,11 @@ class SG150Camera(Camera):  # pylint: disable=abstract-method
     async def handle_async_mjpeg_stream(
         self, request: web.Request
     ) -> web.StreamResponse | None:
-        """Create a new mjpeg stream."""
+        """Serve an HTTP MJPEG stream from the camera."""
         websession = async_get_clientsession(self.hass)
-        stream_coro = websession.get(self._mjpeg_url)
+        stream_coro = websession.get(self._stream_url)
+        # This will still flash the "no stream" image for a few frames,
+        # but it will eventually return the actual stream.
+        # This could be solved by implementing a custom MJPEG proxy that filters
+        # out the first few frames, but that would be more complex.
         return await async_aiohttp_proxy_web(self.hass, request, stream_coro)

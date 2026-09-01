@@ -7,3 +7,4 @@ ruff==0.16.5
 pydantic==2.13.4
 soundfile==0.13.1
 numpy==2.3.2
+PyTurboJPEG==1.6.7
