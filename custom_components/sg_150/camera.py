@@ -91,7 +91,10 @@ class SG150Camera(Camera):  # pylint: disable=abstract-method
 
     _attr_has_entity_name = True
     _attr_translation_key = "camera"
-    _attr_frame_interval = 15
+
+    # This is how the camera entity is calculating this value:
+    # https://github.com/home-assistant/core/blob/7bddee43e85bc13ea3218be8b34848c77ade4969/homeassistant/components/generic/camera.py#L106
+    _attr_frame_interval = 1 / 15
 
     def __init__(
         self,
