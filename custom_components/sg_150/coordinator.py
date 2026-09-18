@@ -12,10 +12,7 @@ from homeassistant.helpers import (
 )
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .api import (
-    SG150ApiClientAuthenticationError,
-    SG150ApiClientError,
-)
+from .api import SG150ApiClient, SG150ApiClientAuthenticationError, SG150ApiClientError
 from .const import DOMAIN, LOGGER
 
 if TYPE_CHECKING:
@@ -69,18 +66,18 @@ class SG150Coordinator(DataUpdateCoordinator):
         """Get the entity name for a device."""
         return self.get_enity_name(device.name or device.id)
 
+    def get_api_client(self) -> SG150ApiClient:
+        """Get the API client."""
+        return self.config_entry.runtime_data.client
+
     async def _async_setup(self) -> None:
         """Set up coordinator."""
-        self.machine_info = (
-            await self.config_entry.runtime_data.client.async_get_machine_info()
-        )
+        self.machine_info = await self.get_api_client().async_get_machine_info()
 
     async def _async_update_data(self) -> Any:
         """Update data via library."""
         try:
-            data = (
-                await self.config_entry.runtime_data.client.async_get_in_home_callable()
-            )
+            data = await self.get_api_client().async_get_in_home_callable()
 
             current_devices = {device.id for device in data.devices}
             if stale_devices := self.previous_devices - current_devices:

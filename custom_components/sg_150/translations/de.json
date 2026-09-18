@@ -86,11 +86,19 @@
                 }
             }
         },
+        "button": {
+            "door_opener": {
+                "name": "Türöffner"
+            },
+            "light_switch": {
+                "name": "Lichtschalter"
+            }
+        },
         "sensor": {
             "mac_address": {
                 "name": "MAC-Address"
             },
-            "phone_numer": {
+            "phone_number": {
                 "name": "Telefonnummer"
             },
             "door_type": {
