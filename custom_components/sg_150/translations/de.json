@@ -23,14 +23,16 @@
                     "sip-user": "SIP Username",
                     "sip-password": "SIP Passwort",
                     "sip-port": "SIP Port",
-                    "sip-number": "SIP Number"
+                    "sip-number": "SIP Nummer",
+                    "sip-auto-answer": "SIP Automatisch Antworten"
                 },
                 "data_description": {
                     "sip-caller-ip": "IP Addresse welche als SIP Caller genutzt wird.",
                     "sip-user": "Benutzername für die Anmeldung durch das Siedle Gateways",
                     "sip-password": "Password für die Anmeldung durch das Siedle Gateways",
                     "sip-port": "Port für die Anmeldung durch das Siedle Gateways",
-                    "sip-number": "Telefonnummer für das im Siedle Gateway Konfigurierte TK-Telefon"
+                    "sip-number": "Telefonnummer für das im Siedle Gateway Konfigurierte TK-Telefon",
+                    "sip-auto-answer": "Automatische Annahme von SIP-Anrufen"
                 }
             }
         },

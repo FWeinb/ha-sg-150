@@ -11,7 +11,7 @@ from homeassistant.components.event import (
     EventEntity,
 )
 
-from .const import LOGGER
+from .const import CONF_SIP_AUTO_ANSWER, LOGGER
 from .entity import SG150PushDeviceEntity
 from .helpers import get_phone_endpoint_capability, is_external_pbx_phone
 
@@ -41,6 +41,7 @@ async def async_setup_entry(
                 coordinator=entry.runtime_data.coordinator,
                 device=device,
                 minisip=entry.runtime_data.server,
+                auto_answer=entry.options.get(CONF_SIP_AUTO_ANSWER, True),
             )
             for device in entry.runtime_data.coordinator.data.devices
             if is_external_pbx_phone(device)
@@ -55,12 +56,17 @@ class SG150RingingEvent(SG150PushDeviceEntity, EventEntity):
     _attr_translation_key = "Bell"
 
     def __init__(
-        self, coordinator: SG150Coordinator, device: SG150Device, minisip: MiniSIPServer
+        self,
+        coordinator: SG150Coordinator,
+        device: SG150Device,
+        minisip: MiniSIPServer,
+        auto_answer: bool,  # noqa: FBT001
     ) -> None:
         """Initialize the doorbell event entity."""
         super().__init__(coordinator, device, name="Bell")
         self._attr_event_types = [DoorbellEventType.RING, "ringing"]
         self._minisip = minisip
+        self._auto_answer = auto_answer
         self.icon = "mdi:bell-ring"
 
         phone_endpoint = get_phone_endpoint_capability(device)
@@ -72,7 +78,8 @@ class SG150RingingEvent(SG150PushDeviceEntity, EventEntity):
 
         self._trigger_event("ringing", dataclasses.asdict(call_context))
         self.schedule_update_ha_state()
-        return True
+        # Return True to indicate that the call should be auto-answered
+        return self._auto_answer
 
     async def async_added_to_hass(self) -> None:
         """Register on_incoming_call callback with SipServer."""
