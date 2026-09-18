@@ -21,6 +21,7 @@ from .api import (
 from .const import (
     API_PORT,
     CONF_HOST_ADDRESS,
+    CONF_SIP_AUTO_ANSWER,
     CONF_SIP_CALLER_IP,
     CONF_SIP_NUMBER,
     CONF_SIP_PASSWORD,
@@ -205,4 +206,7 @@ async def get_options_schema(entry: dict | None = None) -> dict:
         ): selector.TextSelector(
             selector.TextSelectorConfig(type=selector.TextSelectorType.NUMBER),
         ),
+        vol.Optional(
+            CONF_SIP_AUTO_ANSWER, default=(entry or {}).get(CONF_SIP_AUTO_ANSWER, True)
+        ): selector.BooleanSelector(),
     }

@@ -10,6 +10,7 @@ CONF_SIP_USER = "sip-user"
 CONF_SIP_PASSWORD = "sip-password"  # noqa: S105, no password leak
 CONF_SIP_PORT = "sip-port"
 CONF_SIP_NUMBER = "sip-number"
+CONF_SIP_AUTO_ANSWER = "sip-auto-answer"
 
 API_PORT = 8080
 DOMAIN = "sg_150"

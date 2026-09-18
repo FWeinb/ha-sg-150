@@ -43,6 +43,7 @@ In addition to that the Home Assistant instance will also configure a SIP-Server
 - SIP Password: `<PasswordOfYourChoosing>`
 - SIP Number: `<PhoneNumberOfYourChoosing>`
 - SIP Port: `<PortOfYourChoosing>` (default: 5060)
+- SIP Auto Answer: `<AutoAnswerValue>` (default: True, determines if HA will automatically answer incoming calls from the SG-150 blocking the In-Home bus for other devices, needed so the video becomes available)
 
 These values will be used to configure the SG-150 to connect to the SIP-Server provided by this integration.
 

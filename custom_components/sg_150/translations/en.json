@@ -23,14 +23,16 @@
                     "sip-user": "SIP Username",
                     "sip-password": "SIP Passwort",
                     "sip-port": "SIP Port",
-                    "sip-number": "SIP Number"
+                    "sip-number": "SIP Number",
+                    "sip-auto-answer": "SIP Auto Answer"
                 },
                 "data_description": {
                     "sip-caller-ip": "External ip address that will be used as the SIP Caller IP",
                     "sip-user": "Username the Siedle Gateway will use to connect the SIP-Client",
                     "sip-password": "Password used by the Siedle Gateway to authenticate with the SIP-Server",
                     "sip-port": "Port number Siedle Gateway will connect with the SIP-Server",
-                    "sip-number": "Phone number configured in Siedle Gateway for the Softphone"
+                    "sip-number": "Phone number configured in Siedle Gateway for the Softphone",
+                    "sip-auto-answer": "Automatically answer incoming SIP calls"
                 }
             }
         },
