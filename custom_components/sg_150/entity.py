@@ -4,9 +4,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from homeassistant.const import (
-    EntityCategory,
-)
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -35,7 +32,6 @@ class SG150BaseEntity(SG150CoordinatorEntity):
     def __init__(self, coordinator: SG150Coordinator) -> None:
         """Create a new instance."""
         super().__init__(coordinator)
-        self._attr_entity_category = EntityCategory.DIAGNOSTIC
         self._attr_unique_id = coordinator.machine_info.macAddress
         self._attr_device_info = DeviceInfo(
             name="Smart Gateway 150",

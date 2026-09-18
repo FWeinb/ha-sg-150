@@ -110,11 +110,33 @@ class SG150ApiClient:
             )
         )
 
-    async def _api_wrapper(
+    async def async_trigger_door_opener(self, call_number: str) -> None:
+        """
+        Trigger the door opener.
+
+        callNumber: The prefix + number of the phone to trigger the door opener.
+        """
+        await self._api_wrapper(
+            method="POST",
+            route="in-home/openDoorRequests",
+            json={"callNumber": call_number},
+            authenticate=True,
+        )
+
+    async def async_trigger_light_switch(self) -> None:
+        """Trigger the switch light."""
+        await self._api_wrapper(
+            method="POST",
+            route="in-home/switchLightRequests",
+            authenticate=True,
+        )
+
+    async def _api_wrapper(  # noqa: PLR0913, PLR0917
         self,
         method: str,
         route: str,
         data: dict | None = None,
+        json: dict | None = None,
         headers: dict | None = None,
         authenticate: bool = False,  # noqa: FBT001, FBT002
     ) -> dict[str, Any]:
@@ -134,6 +156,7 @@ class SG150ApiClient:
                     url=f"http://{self._host_address}:{self._port}/api/op/v1.0/{route}",
                     headers=headers,
                     data=data,
+                    json=json,
                 )
                 _verify_response_or_raise(response)
                 return await response.json()

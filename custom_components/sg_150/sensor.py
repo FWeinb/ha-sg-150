@@ -1,4 +1,4 @@
-"""BlueprintEntity class."""
+"""Sensor entites for the SG-150."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ async def async_setup_entry(
     entry: SG150ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up the text platform."""
+    """Set up the sensor platform."""
     entites = [MacAddressSensor(coordinator=entry.runtime_data.coordinator)]
 
     for device in entry.runtime_data.coordinator.data.devices:
