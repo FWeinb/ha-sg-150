@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.const import (
@@ -31,6 +33,9 @@ from .const import (
     LOGGER,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
 
 class SG150FlowHandler(config_entries.ConfigFlow, domain=DOMAIN):  # pylint: disable=abstract-method
     """Config flow for Blueprint."""
@@ -58,34 +63,20 @@ class SG150FlowHandler(config_entries.ConfigFlow, domain=DOMAIN):  # pylint: dis
         errors = {}
 
         if user_input is not None:
-            try:
-                host_address = user_input[CONF_HOST_ADDRESS]
-                if await self.async_set_unique_id(host_address.lower()):
-                    self._abort_if_unique_id_configured()
-                else:
-                    username = user_input[CONF_USERNAME]
-                    password = SG150ApiClient.hash_password(user_input[CONF_PASSWORD])
+            host_address = user_input[CONF_HOST_ADDRESS]
+            if await self.async_set_unique_id(host_address.lower()):
+                self._abort_if_unique_id_configured()
 
-                    self._data[CONF_HOST_ADDRESS] = host_address
-                    self._data[CONF_USERNAME] = username
-                    self._data[CONF_PASSWORD] = password
-
-                    await self._test_credentials(
-                        host_address=host_address,
-                        username=username,
-                        password=password,
-                    )
-
-                    return await self.async_step_user_options(user_options=None)
-            except SG150ApiClientAuthenticationError as exception:
-                LOGGER.warning(exception)
-                errors["base"] = "auth"
-            except SG150ApiClientCommunicationError as exception:
-                LOGGER.error(exception)
-                errors["base"] = "connection"
-            except SG150ApiClientError as exception:
-                LOGGER.exception(exception)
-                errors["base"] = "unknown"
+            username = user_input[CONF_USERNAME]
+            password = SG150ApiClient.hash_password(user_input[CONF_PASSWORD])
+            errors = await self._async_check_credentials(
+                host_address=host_address, username=username, password=password
+            )
+            if not errors:
+                self._data[CONF_HOST_ADDRESS] = host_address
+                self._data[CONF_USERNAME] = username
+                self._data[CONF_PASSWORD] = password
+                return await self.async_step_user_options(user_options=None)
 
         return self.async_show_form(
             step_id="user",
@@ -136,10 +127,59 @@ class SG150FlowHandler(config_entries.ConfigFlow, domain=DOMAIN):  # pylint: dis
             ),
         }
 
-    async def _test_credentials(
+    async def async_step_reauth(
+        self, _: Mapping[str, Any]
+    ) -> config_entries.ConfigFlowResult:
+        """Ask for new credentials after the gateway rejected the stored ones."""
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(
+        self, user_input: dict | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Check the new credentials, store them and reload the entry."""
+        entry = self._get_reauth_entry()
+        errors = {}
+
+        if user_input is not None:
+            username = user_input[CONF_USERNAME]
+            password = SG150ApiClient.hash_password(user_input[CONF_PASSWORD])
+            errors = await self._async_check_credentials(
+                host_address=entry.data[CONF_HOST_ADDRESS],
+                username=username,
+                password=password,
+            )
+            if not errors:
+                return self.async_update_reload_and_abort(
+                    entry,
+                    data_updates={CONF_USERNAME: username, CONF_PASSWORD: password},
+                )
+
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_USERNAME, default=entry.data.get(CONF_USERNAME, "admin")
+                    ): selector.TextSelector(
+                        selector.TextSelectorConfig(
+                            type=selector.TextSelectorType.TEXT
+                        ),
+                    ),
+                    vol.Required(CONF_PASSWORD): selector.TextSelector(
+                        selector.TextSelectorConfig(
+                            type=selector.TextSelectorType.PASSWORD
+                        ),
+                    ),
+                }
+            ),
+            description_placeholders={"host": entry.data[CONF_HOST_ADDRESS]},
+            errors=errors,
+        )
+
+    async def _async_check_credentials(
         self, host_address: str, username: str, password: str
-    ) -> None:
-        """Validate credentials."""
+    ) -> dict[str, str]:
+        """Authenticate against the gateway and return form errors, if any."""
         client = SG150ApiClient(
             host_address=host_address,
             port=API_PORT,
@@ -147,11 +187,22 @@ class SG150FlowHandler(config_entries.ConfigFlow, domain=DOMAIN):  # pylint: dis
             password=password,
             session=async_create_clientsession(self.hass),
         )
-        await client.authenticate()
+        try:
+            await client.authenticate()
+        except SG150ApiClientAuthenticationError as exception:
+            LOGGER.warning(exception)
+            return {"base": "auth"}
+        except SG150ApiClientCommunicationError as exception:
+            LOGGER.error(exception)
+            return {"base": "connection"}
+        except SG150ApiClientError as exception:
+            LOGGER.exception(exception)
+            return {"base": "unknown"}
+        return {}
 
 
-class SG150OptionsFlowHandler(config_entries.OptionsFlow):
-    """Handles the options flow."""
+class SG150OptionsFlowHandler(config_entries.OptionsFlowWithReload):
+    """Handles the options flow; changed options reload the entry."""
 
     async def async_step_init(
         self, user_input: dict[str, any] | None = None

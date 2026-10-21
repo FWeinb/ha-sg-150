@@ -62,7 +62,12 @@ class SG150Coordinator(DataUpdateCoordinator):
 
     async def _async_setup(self) -> None:
         """Set up coordinator."""
-        self.machine_info = await self.get_api_client().async_get_machine_info()
+        try:
+            self.machine_info = await self.get_api_client().async_get_machine_info()
+        except SG150ApiClientAuthenticationError as exception:
+            raise ConfigEntryAuthFailed(exception) from exception
+        except SG150ApiClientError as exception:
+            raise UpdateFailed(exception) from exception
 
     async def _async_update_data(self) -> Any:
         """Update data via library."""

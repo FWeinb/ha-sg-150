@@ -130,3 +130,46 @@ async def test_options_flow_updates_options(
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert config_entry.options[CONF_SIP_NUMBER] == "*2621"
     assert len(sip_servers) == 2
+
+
+async def test_reauth_updates_credentials_and_reloads(
+    hass: HomeAssistant,
+    config_entry: MockConfigEntry,
+    setup_integration: MiniSIPServer,
+    sip_servers: list[MiniSIPServer],
+) -> None:
+    """New credentials are checked, stored hashed and the entry reloads."""
+    result = await config_entry.start_reauth_flow(hass)
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "reauth_confirm"
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"username": "admin", "password": "new"}
+    )
+    await hass.async_block_till_done()
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reauth_successful"
+    assert config_entry.data["password"] == SG150ApiClient.hash_password("new")
+    assert config_entry.data[CONF_HOST_ADDRESS] == HOST
+    assert len(sip_servers) == 2
+
+
+async def test_reauth_rejects_wrong_credentials(
+    hass: HomeAssistant,
+    config_entry: MockConfigEntry,
+    aioclient_mock: AiohttpClientMocker,
+) -> None:
+    """Rejected credentials keep the form open with an auth error."""
+    config_entry.add_to_hass(hass)
+    aioclient_mock.post(f"{API_URL}/oauth/token", status=401)
+
+    result = await config_entry.start_reauth_flow(hass)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"username": "admin", "password": "wrong"}
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "reauth_confirm"
+    assert result["errors"] == {"base": "auth"}
+    assert config_entry.data["password"] == "hashed"  # noqa: S105

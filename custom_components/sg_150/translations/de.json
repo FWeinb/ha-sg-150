@@ -34,6 +34,18 @@
                     "sip-number": "Telefonnummer für das im Siedle Gateway Konfigurierte TK-Telefon",
                     "sip-auto-answer": "Automatische Annahme von SIP-Anrufen"
                 }
+            },
+            "reauth_confirm": {
+                "title": "Erneut am Siedle Gateway anmelden",
+                "description": "Das Siedle Gateway unter {host} hat die gespeicherten Anmeldedaten abgelehnt. Gib den aktuellen Benutzernamen und das Passwort ein.",
+                "data": {
+                    "username": "Benutzername",
+                    "password": "Passwort"
+                },
+                "data_description": {
+                    "username": "In den meisten Fällen ist dieser 'admin'",
+                    "password": "Passwort für die lokale Anmeldung am Siedle Gateway"
+                }
             }
         },
         "error": {
@@ -42,7 +54,8 @@
             "unknown": "[%key:common::config_flow::error::unknown%]"
         },
         "abort": {
-            "already_configured": "[%key:common::config_flow::abort::already_configured_account%]"
+            "already_configured": "[%key:common::config_flow::abort::already_configured_account%]",
+            "reauth_successful": "[%key:common::config_flow::abort::reauth_successful%]"
         }
     },
     "options": {

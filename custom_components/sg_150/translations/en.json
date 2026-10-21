@@ -34,6 +34,18 @@
                     "sip-number": "Phone number configured in Siedle Gateway for the Softphone",
                     "sip-auto-answer": "Automatically answer incoming SIP calls"
                 }
+            },
+            "reauth_confirm": {
+                "title": "Sign in to the Siedle Gateway again",
+                "description": "The Siedle Gateway at {host} rejected the stored credentials. Enter the current username and password.",
+                "data": {
+                    "username": "Username",
+                    "password": "Password"
+                },
+                "data_description": {
+                    "username": "In most cases this should be admin",
+                    "password": "Password used to authenticate against the web interface"
+                }
             }
         },
         "error": {
@@ -42,7 +54,8 @@
             "unknown": "[%key:common::config_flow::error::unknown%]"
         },
         "abort": {
-            "already_configured": "[%key:common::config_flow::abort::already_configured_account%]"
+            "already_configured": "[%key:common::config_flow::abort::already_configured_account%]",
+            "reauth_successful": "[%key:common::config_flow::abort::reauth_successful%]"
         }
     },
     "options": {
