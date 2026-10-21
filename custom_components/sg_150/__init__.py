@@ -17,13 +17,16 @@ from .api import SG150ApiClient
 from .const import (
     API_PORT,
     CONF_HOST_ADDRESS,
+    CONF_SIP_AUTO_ANSWER,
     CONF_SIP_CALLER_IP,
+    CONF_SIP_NUMBER,
     CONF_SIP_PASSWORD,
     CONF_SIP_PORT,
     CONF_SIP_USER,
 )
 from .coordinator import SG150Coordinator
 from .data import SG150RuntimeData
+from .line import GatewayLine
 from .services import setup_services
 from .sip.minisip import MiniSIPServer
 
@@ -64,8 +67,16 @@ async def async_setup_entry(
         port=int(entry.options.get(CONF_SIP_PORT)),
     )
 
+    line = GatewayLine(
+        server,
+        user=entry.options.get(CONF_SIP_USER),
+        number=entry.options.get(CONF_SIP_NUMBER),
+        auto_answer=entry.options.get(CONF_SIP_AUTO_ANSWER, True),
+        devices=lambda: coordinator.data.devices if coordinator.data else [],
+    )
+
     entry.runtime_data = SG150RuntimeData(
-        server=server,
+        line=line,
         client=client,
         integration=async_get_loaded_integration(hass, entry.domain),
         coordinator=coordinator,
@@ -76,9 +87,9 @@ async def async_setup_entry(
 
     entry.async_on_unload(entry.add_update_listener(async_reload_entry))
 
-    await server.start()
+    await line.start()
 
-    setup_services(hass, entry=entry, server=server)
+    setup_services(hass, line=line)
 
     return True
 
@@ -88,7 +99,7 @@ async def async_unload_entry(
     entry: SG150ConfigEntry,
 ) -> bool:
     """Handle removal of an entry."""
-    await entry.runtime_data.server.stop()
+    await entry.runtime_data.line.stop()
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
 

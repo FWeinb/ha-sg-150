@@ -17,7 +17,8 @@ import os
 import random
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Literal
 
 import numpy as np
 import soundfile as sf
@@ -266,6 +267,27 @@ class CallContext:
     addr: tuple[str, int]
 
 
+@dataclass(frozen=True)
+class SIPRegistration:
+    """Where a SIP user is registered, and until when."""
+
+    addr: tuple[str, int]
+    expires_at: float
+
+
+@dataclass(frozen=True)
+class SIPDialog:
+    """State of an established call."""
+
+    call_id: str
+    direction: Literal["incoming", "outgoing"]
+    addr: tuple[str, int]
+    from_header: str
+    to_header: str
+    contact: str | None
+    media: dict[str, any] = field(default_factory=dict)
+
+
 # ============================================================
 # SIP Server Class
 # ============================================================
@@ -291,10 +313,10 @@ class MiniSIPServer:
         self.nonces = set()
         self.expires = expires
         self.users = users  # username -> password
-        self.registrations = {}  # username -> {"addr": (ip, port), "expires_at": float}
+        self.registrations: dict[str, SIPRegistration] = {}
         self.challenges = {}
         self.pending_invites = {}
-        self.active_calls = {}
+        self.active_calls: dict[str, SIPDialog] = {}
         self.rtp_sessions = {}
         self.last_cseq = {}
         self.transport = None
@@ -320,7 +342,7 @@ class MiniSIPServer:
                 expired = [
                     user
                     for user, info in self.registrations.items()
-                    if info["expires_at"] <= now
+                    if info.expires_at <= now
                 ]
 
                 for user in expired:
@@ -328,7 +350,7 @@ class MiniSIPServer:
                     log_sip_event(
                         "REGISTER_EXPIRED",
                         username=user,
-                        addr=f"{info['addr']}" if info else None,
+                        addr=f"{info.addr}" if info else None,
                     )
                     await self._fire_event("on_register", user, None)
 
@@ -360,9 +382,11 @@ class MiniSIPServer:
     async def _fire_event(
         self, event_name: str, *args: list[any], **kwargs: list[any]
     ) -> None:
-        listeners = getattr(self, event_name, [])
-        for cb in listeners:
-            asyncio.create_task(cb(*args, **kwargs))  # noqa: RUF006 fire and forget
+        for cb in list(getattr(self, event_name, [])):
+            try:
+                await cb(*args, **kwargs)
+            except Exception:
+                logger.exception("Error in %s listener", event_name)
 
     def sip_user_from(self, name: str) -> str:
         """Get a sip from address."""
@@ -604,17 +628,15 @@ class MiniSIPServer:
         expires = self.parse_expires(message)
         username = auth.get("username")
 
-        self.registrations[username] = {
-            "addr": addr,
-            "expires_at": time.time() + expires,
-        }
+        registration = SIPRegistration(addr=addr, expires_at=time.time() + expires)
+        self.registrations[username] = registration
         log_sip_event(
             "REGISTER_SUCCESS",
             username=username,
             addr=f"{addr}",
             expires=expires,
         )
-        await self._fire_event("on_register", username, addr)
+        await self._fire_event("on_register", username, registration)
 
         self.transport.sendto(
             build_response(
@@ -681,17 +703,20 @@ class MiniSIPServer:
             self.transport.sendto(resp, addr)
 
             media = self.parse_sdp_media(message.get(":body"))
-            self.active_calls[call_id] = (
-                addr,
-                message.get("From"),
-                message.get("To"),
-                message.get("Contact"),
-                media or {},
+            dialog = SIPDialog(
+                call_id=call_id,
+                direction="incoming",
+                addr=addr,
+                from_header=message.get("From"),
+                to_header=message.get("To"),
+                contact=message.get("Contact"),
+                media=media or {},
             )
+            self.active_calls[call_id] = dialog
 
             # This is very optimistic as we did not recive the ACK here
             # a better way would be to only fire this when the ACK was recived.
-            await self._fire_event("on_call_established", call_id, addr)
+            await self._fire_event("on_call_established", dialog)
             log_sip_event("INCOMING_CALL_ACCEPTED", addr=f"{addr}", call_id=call_id)
         else:
             resp = build_response(486, "Busy Here", message)
@@ -705,8 +730,8 @@ class MiniSIPServer:
 
         self.transport.sendto(build_response(200, "OK", message), addr)
         if call_id in self.active_calls:
-            self.active_calls.pop(call_id)
-            await self._fire_event("on_call_ended", call_id)
+            dialog = self.active_calls.pop(call_id)
+            await self._fire_event("on_call_ended", dialog)
 
     async def handle_options(self, message: dict[str, str], addr: (str, int)) -> None:
         """Handle the OPTIONS method."""
@@ -812,14 +837,17 @@ class MiniSIPServer:
                     call_state["final"] = True
                     await self.send_ack(headers_resp, target_addr)
                     media = self.parse_sdp_media(headers_resp.get(":body"))
-                    self.active_calls[call_id] = (
-                        target_addr,
-                        orig_from,
-                        headers_resp.get("To"),
-                        headers_resp.get("Contact"),
-                        media or {},
+                    dialog = SIPDialog(
+                        call_id=call_id,
+                        direction="outgoing",
+                        addr=target_addr,
+                        from_header=orig_from,
+                        to_header=headers_resp.get("To"),
+                        contact=headers_resp.get("Contact"),
+                        media=media or {},
                     )
-                    await self._fire_event("on_call_established", call_id, target_addr)
+                    self.active_calls[call_id] = dialog
+                    await self._fire_event("on_call_established", dialog)
                     return call_id, headers_resp
 
                 else:
@@ -865,8 +893,7 @@ class MiniSIPServer:
             _msg = f"There is currently no active call with call id: {call_id}"
             raise ValueError(_msg)
 
-        call_state = self.active_calls[call_id]
-        media = call_state[4] if len(call_state) > 4 else None  # noqa: PLR2004
+        media = self.active_calls[call_id].media
         if not media:
             _msg = f"No negotiated RTP media for call id: {call_id}"
             raise ValueError(_msg)
@@ -924,7 +951,8 @@ class MiniSIPServer:
             _msg = f"There is currently no active call with call id: {call_id}"
             raise ValueError(_msg)
 
-        addr, from_header, to_header = self.active_calls[call_id][:3]
+        dialog = self.active_calls[call_id]
+        addr, from_header, to_header = dialog.addr, dialog.from_header, dialog.to_header
 
         cseq_num = self.next_cseq_for(call_id)
         headers = {
@@ -948,7 +976,8 @@ class MiniSIPServer:
             _msg = f"There is currently no active call with call id: {call_id}"
             raise ValueError(_msg)
 
-        addr, from_header, to_header = self.active_calls[call_id][:3]
+        dialog = self.active_calls[call_id]
+        addr, from_header, to_header = dialog.addr, dialog.from_header, dialog.to_header
 
         cseq_num = self.next_cseq_for(call_id)
         headers = {
@@ -964,7 +993,7 @@ class MiniSIPServer:
         self.transport.sendto(data, addr)
         log_sip_event("BYE_SENT", addr=f"{addr}", call_id=call_id)
         self.active_calls.pop(call_id)
-        await self._fire_event("on_call_ended", call_id)
+        await self._fire_event("on_call_ended", dialog)
 
     async def handle_datagram(self, data: bytes, addr: (str, int)) -> None:
         """Handle a raw UDP datagram."""

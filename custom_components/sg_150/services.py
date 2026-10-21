@@ -10,48 +10,55 @@ from homeassistant.core import ServiceCall, ServiceResponse, SupportsResponse, c
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import (
-    CONF_SIP_NUMBER,
-    CONF_SIP_USER,
     DOMAIN,
     LOGGER,
 )
+from .line import LineError
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
-    from .data import SG150ConfigEntry
-    from .sip.minisip import MiniSIPServer
+    from .line import Call, GatewayLine
+    from .types import SG150Device
 
 
 BAD_REQUEST_START: int = 400
 
 
+def _device_summary(device: SG150Device | None) -> dict[str, str] | None:
+    """Describe a call's device in a service response."""
+    return {"id": device.id, "name": device.name} if device else None
+
+
 def setup_services(  # noqa: PLR0915
-    hass: HomeAssistant, entry: SG150ConfigEntry, server: MiniSIPServer
+    hass: HomeAssistant, line: GatewayLine
 ) -> None:
     """Setups the HA services."""
+
+    def _get_call(call_id: str) -> Call:
+        """Return the active call, or raise ValueError."""
+        active = line.calls.get(call_id)
+        if active is None:
+            _msg = f"There is currently no active call with call id: {call_id}"
+            raise ValueError(_msg)
+        return active
 
     @callback
     async def handle_start_call(call: ServiceCall) -> ServiceResponse | None:
         """Handle the start call."""
-        registration = server.registrations.get(entry.options.get(CONF_SIP_USER))
-        if not registration:
+        if line.registration is None:
             return {"error": "Not Connected"}
 
         to_user = call.data.get("to", None)
         if not to_user:
             return {"error": "No phone number supplied"}
 
-        call_id, _ = await server.send_invite(
-            target_addr=registration.get("addr"),
-            from_user=entry.options.get(CONF_SIP_NUMBER),
-            to_user=to_user,
-        )
+        try:
+            started = await line.call(to_user)
+        except LineError as err:
+            return {"error": str(err)}
 
-        if not call_id:
-            return {"error": f"Could not start call to {to_user}"}
-
-        return {"call_id": call_id, "error": None}
+        return {"call_id": started.id, "error": None}
 
     @callback
     async def handle_stop_call(call: ServiceCall) -> ServiceResponse | None:
@@ -59,7 +66,7 @@ def setup_services(  # noqa: PLR0915
         call_id = call.data.get("call_id")
         if call_id:
             try:
-                await server.send_bye(call_id)
+                await _get_call(call_id).hangup()
             except ValueError as e:
                 return {"error": str(e)} if call.return_response else None
             return {"success": True, "error": None} if call.return_response else None
@@ -74,7 +81,7 @@ def setup_services(  # noqa: PLR0915
         duration = call.data.get("duration") or "100"
         if call_id and signal:
             try:
-                await server.send_sip_info_dtmf(call_id, signal, duration)
+                await _get_call(call_id).send_dtmf(signal, duration)
             except ValueError as e:
                 return {"error": str(e)} if call.return_response else None
             return {"success": True, "error": None} if call.return_response else None
@@ -139,7 +146,7 @@ def setup_services(  # noqa: PLR0915
         try:
             LOGGER.debug("_fetch media for source_id=%s", media_source_id)
             mime_type, data = await _fetch_media_source_audio(media_source_id)
-            await server.play_audio(call_id, mime_type, data)
+            await _get_call(call_id).play(mime_type, data)
         except ValueError as err:
             return {"error": str(err)} if call.return_response else None
 
@@ -148,9 +155,18 @@ def setup_services(  # noqa: PLR0915
     @callback
     async def handle_get_active_calls(_: ServiceCall) -> ServiceResponse:
         """Handle the get active calls service."""
-        # get all keys from the server's active_calls dictionary
-        active_calls = list(server.active_calls.keys())
-        return {"active_calls": active_calls}
+        return {
+            "active_calls": list(line.calls),
+            "calls": [
+                {
+                    "call_id": active.id,
+                    "direction": active.direction,
+                    "caller": _device_summary(active.caller),
+                    "callee": _device_summary(active.callee),
+                }
+                for active in line.calls.values()
+            ],
+        }
 
     hass.services.async_register(
         DOMAIN,

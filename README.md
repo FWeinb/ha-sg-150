@@ -15,7 +15,7 @@ Currently the integration exposes:
   - start_call: Start a phone call within the In-Home system
   - stop_call: Stop a phone call within the In-Home system
   - send_sip_info_dtmf: Sends a DTMF signal to the Siedle Gateway during an In-Home phone call
-  - get_active_calls: Returns a list of active call IDs.
+  - get_active_calls: Returns a list of active call IDs (`active_calls`) and, in `calls`, each call's direction and the caller/callee device (`id`, `name`) when known.
   - play_audio: Play a media_source_id to an active call (Supporting wav/mp3, see [Tips & Tricks](#tips--tricks)) 
 
 # Disclaimer

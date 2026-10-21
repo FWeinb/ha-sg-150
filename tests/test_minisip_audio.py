@@ -8,6 +8,7 @@ import soundfile as sf
 
 from custom_components.sg_150.sip.minisip import (
     MiniSIPServer,
+    SIPDialog,
     convert_audio_to_pcma,
 )
 from tests.utils import FakeTransport
@@ -45,12 +46,14 @@ class MiniSIPAudioTests(unittest.IsolatedAsyncioTestCase):
         server = MiniSIPServer(
             {"user": "pass"}, host="127.0.0.1", call_host="127.0.0.1"
         )
-        server.active_calls["call-123"] = (
-            ("192.168.1.20", 5060),
-            "From: <sip:123@127.0.0.1>",
-            "To: <sip:456@192.168.1.20>",
-            None,
-            {
+        server.active_calls["call-123"] = SIPDialog(
+            call_id="call-123",
+            direction="incoming",
+            addr=("192.168.1.20", 5060),
+            from_header="<sip:123@127.0.0.1>",
+            to_header="<sip:456@192.168.1.20>",
+            contact=None,
+            media={
                 "ip": "192.168.1.20",
                 "port": 4000,
                 "payload_type": 8,
@@ -128,10 +131,10 @@ class MiniSIPAudioTests(unittest.IsolatedAsyncioTestCase):
         await server.handle_invite(invite, ("192.168.1.20", 5060))
 
         assert "call-123" in server.active_calls
-        assert server.active_calls["call-123"][0] == ("192.168.1.20", 5060)
-        assert server.active_calls["call-123"][4]["ip"] == "192.168.1.20"
-        assert server.active_calls["call-123"][4]["port"] == 4000
-        assert server.active_calls["call-123"][4]["payload_type"] == 8
+        assert server.active_calls["call-123"].addr == ("192.168.1.20", 5060)
+        assert server.active_calls["call-123"].media["ip"] == "192.168.1.20"
+        assert server.active_calls["call-123"].media["port"] == 4000
+        assert server.active_calls["call-123"].media["payload_type"] == 8
         assert len(server.transport.sent) >= 2
         assert all(isinstance(item, tuple) for item in server.transport.sent)
 
