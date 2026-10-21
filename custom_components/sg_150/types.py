@@ -5,7 +5,7 @@ These are used as return types of various API-Calls
 """
 
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, Field, RootModel
 
@@ -25,6 +25,16 @@ class SG150DeviceCallNumber(BaseModel):
 
     prefix: str | None
     extension: str | None
+
+    @property
+    def dialable(self) -> str:
+        """Return the dial string sent to the gateway (prefix + extension)."""
+        return f"{self.prefix or ''}{self.extension or ''}"
+
+    @property
+    def display(self) -> str:
+        """Return the call number formatted for display."""
+        return " ".join(part for part in (self.prefix, self.extension) if part)
 
 
 class SG150PbxSystem(BaseModel):
@@ -193,9 +203,19 @@ class SG150DeviceCapability(RootModel):
         | SG150DeviceCapabilityAutomationTile
     ) = Field(discriminator="type")
 
-    def __getattr__(self, name: str) -> Any:
-        """Redirects to the correct capability."""
-        return getattr(self.root, name)
+
+def _find_capability[T: BaseModel](
+    capabilities: list[SG150DeviceCapability], kind: type[T]
+) -> T | None:
+    """Return the first capability of the given kind, if any."""
+    return next(
+        (
+            capability.root
+            for capability in capabilities
+            if isinstance(capability.root, kind)
+        ),
+        None,
+    )
 
 
 class SG150DeviceType(StrEnum):
@@ -213,6 +233,44 @@ class SG150Device(BaseModel):
     name: str
     type: SG150DeviceType
     capabilities: list[SG150DeviceCapability]
+
+    @property
+    def phone_endpoint(self) -> SG150DeviceCapabilityPhoneEndpointProperties | None:
+        """Return the PHONE_ENDPOINT properties, if the device has one."""
+        capability = _find_capability(
+            self.capabilities, SG150DeviceCapabilityPhoneEndpoint
+        )
+        return capability.properties if capability else None
+
+    @property
+    def video_extraction(
+        self,
+    ) -> SG150DeviceCapabilityVideoExtractionProperties | None:
+        """Return the VIDEO_EXTRACTION properties, if the device has one."""
+        capability = _find_capability(
+            self.capabilities, SG150DeviceCapabilityVideoExtraction
+        )
+        return capability.properties if capability else None
+
+    @property
+    def in_home(self) -> SG150DeviceCapabilityInHomeProperties | None:
+        """Return the IN_HOME properties, if the device has one."""
+        capability = _find_capability(self.capabilities, SG150DeviceCapabilityInHome)
+        return capability.properties if capability else None
+
+    @property
+    def is_door(self) -> bool:
+        """Return whether the device is a door station."""
+        return self.phone_endpoint is not None and self.phone_endpoint.isDoor
+
+    @property
+    def is_external_pbx_phone(self) -> bool:
+        """Return whether the device is a phone on an external PBX system."""
+        return (
+            self.type == SG150DeviceType.PBXPHONE
+            and self.phone_endpoint is not None
+            and self.phone_endpoint.pbxSystem.type == "EXTERNAL"
+        )
 
 
 class SG150Devices(BaseModel):

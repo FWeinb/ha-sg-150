@@ -14,10 +14,6 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.httpx_client import get_async_client
 
 from .const import LOGGER, MANUFACTURER
-from .helpers import (
-    get_video_extraction_capability,
-    has_video_extraction,
-)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -53,17 +49,16 @@ async def async_setup_entry(
 
     # Create an entity for each device in `data`
     for device in entry.runtime_data.coordinator.data.devices:
-        if has_video_extraction(device):
-            extractor = get_video_extraction_capability(device)
-            if extractor.properties.type == "MJPEG_STREAM":
-                entites.append(
-                    SG150Camera(
-                        coordinator=entry.runtime_data.coordinator,
-                        device=device,
-                        url=extractor.properties.url,
-                        minisip=entry.runtime_data.server,
-                    )
+        video_extraction = device.video_extraction
+        if video_extraction is not None and video_extraction.type == "MJPEG_STREAM":
+            entites.append(
+                SG150Camera(
+                    coordinator=entry.runtime_data.coordinator,
+                    device=device,
+                    url=video_extraction.url,
+                    minisip=entry.runtime_data.server,
                 )
+            )
 
     async_add_entities(entites)
 
