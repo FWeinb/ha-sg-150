@@ -24,3 +24,6 @@ class FakeTransport:
     def sendto(self, data: bytes, addr: tuple[str, int]) -> None:
         """Record the data and address."""
         self.sent.append((data, addr))
+
+    def close(self) -> None:
+        """Do nothing, there is no socket to close."""

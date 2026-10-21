@@ -9,7 +9,7 @@ from custom_components.sg_150.sip.minisip import (
     SIPDialog,
     md5_hex,
 )
-from tests.test_line import GATEWAY, HA_NUMBER, ack, bye, invite, sip
+from tests.sip_messages import GATEWAY, HA_NUMBER, ack, bye, invite, sip
 from tests.utils import FakeTransport
 
 

@@ -1,157 +1,191 @@
-"""Tests for the integration services."""
+"""The integration's services, called through Home Assistant."""
 
-import unittest
-from unittest.mock import MagicMock
+from __future__ import annotations
 
-from homeassistant.core import SupportsResponse
+import asyncio
+import json
+import re
+from typing import TYPE_CHECKING
 
-from custom_components.sg_150.const import DOMAIN
-from custom_components.sg_150.line import GatewayLine
-from custom_components.sg_150.services import (
-    async_setup_services,
-    handle_get_active_calls,
-    handle_start_call,
-    handle_stop_call,
+import pytest
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+from custom_components.sg_150.const import API_PORT, CONF_HOST_ADDRESS, DOMAIN
+from tests.conftest import MACHINE_INFO, TOKEN
+from tests.sip_messages import (
+    GATEWAY,
+    HA_HOST,
+    HA_NUMBER,
+    ack,
+    invite,
+    register,
+    sip,
 )
-from custom_components.sg_150.sip.minisip import MiniSIPServer
-from tests.test_line import GATEWAY, HA_NUMBER, ack, invite
-from tests.utils import FakeTransport, load_devices
+from tests.utils import FIXTURES
 
-
-def make_line() -> tuple[GatewayLine, MiniSIPServer]:
-    """Create a line on a server with a fake transport."""
-    server = MiniSIPServer({"gateway": "pw"}, host="127.0.0.1", call_host="127.0.0.1")
-    server.transport = FakeTransport()
-    devices = load_devices()
-    line = GatewayLine(
-        server,
-        user="gateway",
-        number=HA_NUMBER,
-        auto_answer=True,
-        devices=devices.values,
+if TYPE_CHECKING:
+    from homeassistant.core import HomeAssistant, ServiceResponse
+    from pytest_homeassistant_custom_component.test_util.aiohttp import (
+        AiohttpClientMocker,
     )
-    return line, server
+
+    from custom_components.sg_150.sip.minisip import MiniSIPServer
+
+SERVICES = [
+    "start_call",
+    "stop_call",
+    "send_sip_info_dtmf",
+    "get_active_calls",
+    "play_audio",
+]
 
 
-def make_hass(*lines: GatewayLine) -> MagicMock:
-    """Create a hass stub with one loaded config entry per line."""
-    entries = []
-    for index, line in enumerate(lines):
-        entry = MagicMock(entry_id=f"entry-{index}")
-        entry.runtime_data.line = line
-        entries.append(entry)
-    hass = MagicMock()
-    hass.config_entries.async_loaded_entries.return_value = entries
-    return hass
+async def call(
+    hass: HomeAssistant, service: str, *, return_response: bool = True, **data: object
+) -> ServiceResponse:
+    """Call one of the integration's services."""
+    return await hass.services.async_call(
+        DOMAIN, service, data, blocking=True, return_response=return_response
+    )
 
 
-def service_call(*, return_response: bool = True, **data: object) -> MagicMock:
-    """Create a ServiceCall stub."""
-    return MagicMock(data=data, return_response=return_response)
+async def establish_incoming_call(server: MiniSIPServer, call_id: str) -> None:
+    """Let the front door call Home Assistant and complete the handshake."""
+    await server.handle_datagram(invite(call_id, "*111", HA_NUMBER), GATEWAY)
+    await server.handle_datagram(ack(call_id), GATEWAY)
 
 
-class ServiceRegistrationTests(unittest.TestCase):
-    """Services are registered once, independent of config entries."""
+@pytest.fixture
+async def second_gateway(
+    hass: HomeAssistant,
+    config_entry: MockConfigEntry,
+    aioclient_mock: AiohttpClientMocker,
+    setup_integration: MiniSIPServer,
+    sip_servers: list[MiniSIPServer],
+) -> tuple[MockConfigEntry, MiniSIPServer]:
+    """Set up a second gateway next to the first one."""
+    host = "192.0.2.11"
+    api = f"http://{host}:{API_PORT}/api/op/v1.0"
+    devices = json.loads((FIXTURES / "system_devices.json").read_text())
+    aioclient_mock.post(f"{api}/oauth/token", json=TOKEN)
+    aioclient_mock.get(
+        f"{api}/system/machineInfo",
+        json={**MACHINE_INFO, "macAddress": "00:11:22:33:44:66"},
+    )
+    aioclient_mock.get(f"{api}/system/devices", json=devices)
 
-    def test_registers_each_service_once_with_its_response_mode(self) -> None:
-        """All five services are registered with their response contract."""
-        hass = MagicMock()
-
-        async_setup_services(hass)
-
-        registered = {
-            args[1]: kwargs["supports_response"]
-            for args, kwargs in hass.services.async_register.call_args_list
-        }
-        assert registered == {
-            "start_call": SupportsResponse.ONLY,
-            "stop_call": SupportsResponse.OPTIONAL,
-            "send_sip_info_dtmf": SupportsResponse.OPTIONAL,
-            "get_active_calls": SupportsResponse.ONLY,
-            "play_audio": SupportsResponse.OPTIONAL,
-        }
-        assert all(
-            args[0] == DOMAIN for args, _ in hass.services.async_register.call_args_list
-        )
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title=host,
+        unique_id=host,
+        data={**config_entry.data, CONF_HOST_ADDRESS: host},
+        options=dict(config_entry.options),
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    return entry, sip_servers[1]
 
 
-class ServiceTargetTests(unittest.IsolatedAsyncioTestCase):
-    """Each call resolves its gateway from the loaded config entries."""
+@pytest.mark.usefixtures("setup_integration")
+async def test_services_are_registered(hass: HomeAssistant) -> None:
+    """Every service is available once the integration is set up."""
+    assert all(hass.services.has_service(DOMAIN, name) for name in SERVICES)
 
-    async def test_single_gateway_is_used_without_config_entry_id(self) -> None:
-        """With one gateway the call needs no target."""
-        line, server = make_line()
-        await server.handle_datagram(invite("call-1", "*111", HA_NUMBER), GATEWAY)
-        await server.handle_datagram(ack("call-1"), GATEWAY)
 
-        response = await handle_get_active_calls(make_hass(line), service_call())
+async def test_get_active_calls_lists_calls_with_devices(
+    hass: HomeAssistant, setup_integration: MiniSIPServer
+) -> None:
+    """Active calls carry their direction and the matched devices."""
+    await establish_incoming_call(setup_integration, "call-1")
 
-        assert response == {
-            "active_calls": ["call-1"],
-            "calls": [
-                {
-                    "call_id": "call-1",
-                    "direction": "incoming",
-                    "caller": {"id": "door-front", "name": "Front Door"},
-                    "callee": {"id": "pbx-external", "name": "Home Assistant"},
-                }
-            ],
-        }
+    assert await call(hass, "get_active_calls") == {
+        "active_calls": ["call-1"],
+        "calls": [
+            {
+                "call_id": "call-1",
+                "direction": "incoming",
+                "caller": {"id": "door-front", "name": "Front Door"},
+                "callee": {"id": "pbx-external", "name": "Home Assistant"},
+            }
+        ],
+    }
 
-    async def test_config_entry_id_selects_the_gateway(self) -> None:
-        """With several gateways, config_entry_id picks one."""
-        first, _ = make_line()
-        second, second_server = make_line()
-        await second_server.handle_datagram(
-            invite("call-2", "*111", HA_NUMBER), GATEWAY
-        )
-        await second_server.handle_datagram(ack("call-2"), GATEWAY)
-        hass = make_hass(first, second)
 
-        response = await handle_get_active_calls(
-            hass, service_call(config_entry_id="entry-1")
-        )
+async def test_start_call_returns_the_call_id(
+    hass: HomeAssistant, setup_integration: MiniSIPServer
+) -> None:
+    """start_call dials through the registered gateway and returns the call id."""
+    server = setup_integration
+    assert await call(hass, "start_call", to="*111") == {"error": "Not Connected"}
 
-        assert response["active_calls"] == ["call-2"]
+    await register(server)
+    server.transport.sent.clear()
+    pending = hass.async_create_task(call(hass, "start_call", to="*111"))
+    while not server.transport.sent:  # noqa: ASYNC110
+        await asyncio.sleep(0)
+    request = server.transport.sent[0][0].decode()
+    call_id = re.search(r"Call-ID: (.+)\r\n", request).group(1)
+    await server.handle_datagram(
+        sip(
+            "SIP/2.0 200 OK",
+            {
+                "Via": f"SIP/2.0/UDP {HA_HOST}:5060;branch=z3",
+                "From": f"<sip:{HA_NUMBER}@{HA_HOST}>",
+                "To": f"<sip:*111@{GATEWAY[0]}>;tag=gw",
+                "Call-ID": call_id,
+                "CSeq": "1 INVITE",
+                "Contact": f"<sip:*111@{GATEWAY[0]}>",
+            },
+        ),
+        GATEWAY,
+    )
 
-    async def test_errors_are_returned_in_the_response(self) -> None:
-        """Targeting problems are reported as {"error": ...}, not raised."""
-        line, _ = make_line()
+    assert await pending == {"call_id": call_id, "error": None}
 
-        ambiguous = await handle_start_call(
-            make_hass(line, line), service_call(to="*111")
-        )
-        unknown = await handle_start_call(
-            make_hass(line), service_call(to="*111", config_entry_id="nope")
-        )
-        none_loaded = await handle_start_call(make_hass(), service_call(to="*111"))
-        not_registered = await handle_start_call(
-            make_hass(line), service_call(to="*111")
-        )
 
-        assert ambiguous == {
-            "error": "Several SG-150 gateways are loaded, specify config_entry_id"
-        }
-        assert unknown == {
-            "error": "No loaded SG-150 gateway with config entry id: nope"
-        }
-        assert none_loaded == {"error": "No SG-150 gateway is loaded"}
-        assert not_registered == {"error": "Not Connected"}
+async def test_stop_call_responds_only_when_asked(
+    hass: HomeAssistant, setup_integration: MiniSIPServer
+) -> None:
+    """OPTIONAL services report errors as data and stay silent otherwise."""
+    await establish_incoming_call(setup_integration, "call-2")
 
-    async def test_optional_responses_are_only_returned_when_requested(self) -> None:
-        """OPTIONAL services return nothing unless a response was asked for."""
-        line, server = make_line()
-        await server.handle_datagram(invite("call-3", "*111", HA_NUMBER), GATEWAY)
-        await server.handle_datagram(ack("call-3"), GATEWAY)
-        hass = make_hass(line)
+    assert await call(hass, "stop_call", call_id="missing") == {
+        "error": "There is currently no active call with call id: missing"
+    }
+    assert await call(hass, "stop_call", call_id="call-2") == {
+        "success": True,
+        "error": None,
+    }
+    await establish_incoming_call(setup_integration, "call-3")
+    assert (
+        await call(hass, "stop_call", return_response=False, call_id="call-3") is None
+    )
+    assert (await call(hass, "get_active_calls"))["active_calls"] == []
 
-        unknown = await handle_stop_call(hass, service_call(call_id="missing"))
-        silent = await handle_stop_call(
-            hass, service_call(call_id="call-3", return_response=False)
-        )
 
-        assert unknown == {
-            "error": "There is currently no active call with call id: missing"
-        }
-        assert silent is None
-        assert not line.calls
+async def test_config_entry_id_selects_the_gateway(
+    hass: HomeAssistant,
+    config_entry: MockConfigEntry,
+    second_gateway: tuple[MockConfigEntry, MiniSIPServer],
+) -> None:
+    """With two gateways a call must name one with config_entry_id."""
+    entry, server = second_gateway
+    await establish_incoming_call(server, "call-4")
+
+    assert await call(hass, "get_active_calls", config_entry_id=entry.entry_id) == {
+        "active_calls": ["call-4"],
+        "calls": [
+            {
+                "call_id": "call-4",
+                "direction": "incoming",
+                "caller": {"id": "door-front", "name": "Front Door"},
+                "callee": {"id": "pbx-external", "name": "Home Assistant"},
+            }
+        ],
+    }
+    first = await call(hass, "get_active_calls", config_entry_id=config_entry.entry_id)
+    assert first["active_calls"] == []
+    assert await call(hass, "start_call", to="*111") == {
+        "error": "Several SG-150 gateways are loaded, specify config_entry_id"
+    }
