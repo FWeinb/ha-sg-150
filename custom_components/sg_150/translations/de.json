@@ -96,7 +96,7 @@
         },
         "sensor": {
             "mac_address": {
-                "name": "MAC-Address"
+                "name": "MAC-Adresse"
             },
             "phone_number": {
                 "name": "Telefonnummer"
@@ -107,7 +107,7 @@
         },
         "event": {
             "bell": {
-                "name": "Klingle",
+                "name": "Klingel",
                 "state_attributes": {
                     "event_type": {
                         "state": {

@@ -11,7 +11,7 @@ from homeassistant.components.event import (
 )
 
 from .const import LOGGER
-from .entity import SG150PushDeviceEntity
+from .entity import SG150DeviceEntity
 from .line import IncomingCall
 
 if TYPE_CHECKING:
@@ -47,11 +47,10 @@ async def async_setup_entry(
     )
 
 
-class SG150RingingEvent(SG150PushDeviceEntity, EventEntity):
+class SG150RingingEvent(SG150DeviceEntity, EventEntity):
     """Event Entity representing the SG150 ringing event."""
 
     _attr_device_class = EventDeviceClass.DOORBELL
-    _attr_translation_key = "Bell"
 
     def __init__(
         self,
@@ -60,7 +59,7 @@ class SG150RingingEvent(SG150PushDeviceEntity, EventEntity):
         line: GatewayLine,
     ) -> None:
         """Initialize the doorbell event entity."""
-        super().__init__(coordinator, device, name="Bell")
+        super().__init__(coordinator, device, key="bell")
         self._attr_event_types = [DoorbellEventType.RING, "ringing"]
         self._line = line
         self.icon = "mdi:bell-ring"

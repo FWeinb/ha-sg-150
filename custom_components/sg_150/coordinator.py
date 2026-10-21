@@ -54,17 +54,7 @@ class SG150Coordinator(DataUpdateCoordinator):
 
     def get_gateway_identifier(self) -> tuple[str, str]:
         """Get the gateway identifier to be used within via_device."""
-        if self.machine_info is None:
-            return None
         return (self.config_entry.domain, self.config_entry.entry_id)
-
-    def get_enity_name(self, value: str) -> str:
-        """Get the entity name for a device."""
-        return f"{self.machine_info.machineModel} {value}"
-
-    def get_enity_name_for_device(self, device: SG150Device) -> str:
-        """Get the entity name for a device."""
-        return self.get_enity_name(device.name or device.id)
 
     def get_api_client(self) -> SG150ApiClient:
         """Get the API client."""
