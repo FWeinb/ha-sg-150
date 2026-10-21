@@ -11,6 +11,7 @@ Currently the integration exposes:
   - Phone number sensor
 - All video extractors
   - Camera for the live stream
+- Media source with the pictures the gateway stored during calls, per PBX phone (Media → Siedle Gateway)
 - Actions to control the SG-150:
   - start_call: Start a phone call within the In-Home system
   - stop_call: Stop a phone call within the In-Home system

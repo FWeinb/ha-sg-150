@@ -4,6 +4,7 @@ Types used in the API.
 These are used as return types of various API-Calls
 """
 
+from datetime import datetime
 from enum import StrEnum
 from typing import Literal
 
@@ -286,3 +287,26 @@ class OAuthTokenResponse(BaseModel):
     token_type: str
     expires_in: int
     refresh_token: str
+
+
+class SG150StoredImage(BaseModel):
+    """API SG150StoredImage: a picture the gateway took during a call."""
+
+    id: int
+    uid: str
+    cameraName: str  # noqa: N815
+    timestamp: datetime
+    callId: str | None = None  # noqa: N815
+    filename: str
+
+
+class SG150StoredImageContent(SG150StoredImage):
+    """API SG150StoredImageContent: a stored image with its base64 content."""
+
+    content: str
+
+
+class SG150StoredImages(BaseModel):
+    """API SG150StoredImages: the image store's reply for one device."""
+
+    images: list[SG150StoredImage]
