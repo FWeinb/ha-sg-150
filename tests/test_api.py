@@ -22,6 +22,7 @@ TOKEN_RESPONSE = {
 }
 
 
+@pytest.mark.usefixtures("socket_enabled")
 class ApiClientTests(unittest.IsolatedAsyncioTestCase):
     """Exercise the API client against a local HTTP server."""
 
