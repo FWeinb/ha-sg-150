@@ -11,7 +11,7 @@ from homeassistant.const import (
 )
 from homeassistant.util.dt import as_local
 
-from .entity import SG150PushEntity
+from .entity import SG150GatewayEntity
 from .line import Registered, Unregistered
 
 if TYPE_CHECKING:
@@ -38,17 +38,15 @@ async def async_setup_entry(
     async_add_entities(entites)
 
 
-class SipRegistered(SG150PushEntity, BinarySensorEntity):
+class SipRegistered(SG150GatewayEntity, BinarySensorEntity):
     """Binary Sensor Representing the SIP Connection Status."""
 
-    _attr_has_entity_name = True
     _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_translation_key = "sip_connection"
     icon = "mdi:server-network-outline"
 
     def __init__(self, coordinator: SG150Coordinator, line: GatewayLine) -> None:
         """Create a new SipRegistered entity."""
-        super().__init__(coordinator)
+        super().__init__(coordinator, key="sip_connection")
         self._line = line
         self._attr_extra_state_attributes = {"user": line.user}
 

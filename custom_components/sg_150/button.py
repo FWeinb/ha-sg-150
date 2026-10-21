@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 from homeassistant.components.button import ButtonEntity
 
-from .entity import SG150BaseDeviceEntity, SG150BaseEntity
+from .entity import SG150DeviceEntity, SG150GatewayEntity
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -36,15 +36,14 @@ async def async_setup_entry(
     )
 
 
-class DoorOpenerButton(SG150BaseDeviceEntity, ButtonEntity):
+class DoorOpenerButton(SG150DeviceEntity, ButtonEntity):
     """Button Entity triggering the door opener when pressed."""
 
-    _attr_translation_key = "door_opener"
     icon = "mdi:door-open"
 
     def __init__(self, coordinator: SG150Coordinator, device: SG150Device) -> None:
         """Initialize the door opener button."""
-        super().__init__(coordinator, device, name="Door Opener")
+        super().__init__(coordinator, device, key="door_opener")
 
     def press(self) -> None:
         """Do not support the synchronous button API."""
@@ -60,16 +59,14 @@ class DoorOpenerButton(SG150BaseDeviceEntity, ButtonEntity):
         )
 
 
-class LightSwitchButton(SG150BaseEntity, ButtonEntity):
+class LightSwitchButton(SG150GatewayEntity, ButtonEntity):
     """Button Entity triggering the light switch when pressed."""
 
-    _attr_translation_key = "light_switch"
     icon = "mdi:lightbulb-on-outline"
 
     def __init__(self, coordinator: SG150Coordinator) -> None:
         """Initialize the light switch button."""
-        super().__init__(coordinator)
-        self._attr_entity_category = None
+        super().__init__(coordinator, key="light_switch")
 
     def press(self) -> None:
         """Do not support the synchronous button API."""

@@ -10,10 +10,10 @@ from homeassistant.helpers.aiohttp_client import (
     async_aiohttp_proxy_web,
     async_get_clientsession,
 )
-from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.httpx_client import get_async_client
 
-from .const import LOGGER, MANUFACTURER
+from .const import LOGGER
+from .entity import SG150DeviceEntity
 from .line import CallEnded, CallStarted
 
 if TYPE_CHECKING:
@@ -102,11 +102,8 @@ async def _async_extract_image_from_mjpeg(
     return None
 
 
-class SG150Camera(Camera):  # pylint: disable=abstract-method
+class SG150Camera(SG150DeviceEntity, Camera):  # pylint: disable=abstract-method
     """Camera Entity for SG150 Stream."""
-
-    _attr_has_entity_name = True
-    _attr_translation_key = "camera"
 
     # This is how the camera entity is calculating this value:
     # https://github.com/home-assistant/core/blob/7bddee43e85bc13ea3218be8b34848c77ade4969/homeassistant/components/generic/camera.py#L106
@@ -119,19 +116,13 @@ class SG150Camera(Camera):  # pylint: disable=abstract-method
         url: str,
         line: GatewayLine,
     ) -> None:
-        """Initialize the doorbell event entity."""
-        super().__init__()
+        """Initialize the camera entity."""
+        # CoordinatorEntity does not chain to Camera.__init__, so call both.
+        super().__init__(coordinator, device, key="camera")
+        Camera.__init__(self)
         self._stream_url = url
         self._line = line
-        self._device_id = device.id
         self._attr_is_streaming = False
-        self._attr_unique_id = device.id + "Camera"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(coordinator.config_entry.domain, device.id)},
-            name=device.name,
-            manufacturer=MANUFACTURER,
-            via_device=coordinator.get_gateway_identifier(),
-        )
 
     def _update_call_state(self) -> None:
         """Stream while a call to or from this device is established."""

@@ -9,7 +9,7 @@ from homeassistant.const import (
     EntityCategory,
 )
 
-from .entity import SG150BaseDeviceEntity, SG150BaseEntity
+from .entity import SG150DeviceEntity, SG150GatewayEntity
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -51,16 +51,15 @@ async def async_setup_entry(
     async_add_entities(entites)
 
 
-class DoorTypeSensor(SG150BaseDeviceEntity, SensorEntity):
+class DoorTypeSensor(SG150DeviceEntity, SensorEntity):
     """Sensor Entity representing the SG150 Door type."""
 
     _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_translation_key = "door_type"
     icon = "mdi:cellphone-cog"
 
     def __init__(self, coordinator: SG150Coordinator, device: SG150Device) -> None:
-        """Initialize the doorbell event entity."""
-        super().__init__(coordinator, device, name="Door Type")
+        """Initialize the door type sensor."""
+        super().__init__(coordinator, device, key="door_type")
 
     @property
     def native_value(self) -> str | None:
@@ -69,16 +68,15 @@ class DoorTypeSensor(SG150BaseDeviceEntity, SensorEntity):
         return in_home.deviceType if in_home else None
 
 
-class PhoneNumber(SG150BaseDeviceEntity, SensorEntity):
+class PhoneNumber(SG150DeviceEntity, SensorEntity):
     """Sensor Entity representing the SG150 phone number."""
 
     _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_translation_key = "phone_number"
     icon = "mdi:phone"
 
     def __init__(self, coordinator: SG150Coordinator, device: SG150Device) -> None:
-        """Initialize the doorbell event entity."""
-        super().__init__(coordinator, device, name="Phone Number")
+        """Initialize the phone number sensor."""
+        super().__init__(coordinator, device, key="phone_number")
 
     @property
     def native_value(self) -> str | None:
@@ -87,13 +85,15 @@ class PhoneNumber(SG150BaseDeviceEntity, SensorEntity):
         return phone_endpoint.callNumber.display if phone_endpoint else None
 
 
-class MacAddressSensor(SG150BaseEntity, SensorEntity):
+class MacAddressSensor(SG150GatewayEntity, SensorEntity):
     """Sensor Entity representing the SG150 mac address."""
 
     _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_translation_key = "mac_address"
-    _attr_name = "MAC Address"
     icon = "mdi:identifier"
+
+    def __init__(self, coordinator: SG150Coordinator) -> None:
+        """Initialize the MAC address sensor."""
+        super().__init__(coordinator, key="mac_address")
 
     @property
     def native_value(self) -> str | None:
