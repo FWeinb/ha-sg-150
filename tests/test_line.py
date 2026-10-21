@@ -61,6 +61,20 @@ def invite(call_id: str, from_user: str, to_user: str) -> bytes:
     )
 
 
+def ack(call_id: str) -> bytes:
+    """Build the ACK the gateway sends after our 200 OK."""
+    return sip(
+        f"ACK sip:{HA_NUMBER}@{HA_HOST} SIP/2.0",
+        {
+            "Via": f"SIP/2.0/UDP {GATEWAY[0]}:{GATEWAY[1]};branch=z4",
+            "From": f"<sip:*111@{GATEWAY[0]}>;tag=gw",
+            "To": f"<sip:{HA_NUMBER}@{HA_HOST}>;tag=minisip",
+            "Call-ID": call_id,
+            "CSeq": "1 ACK",
+        },
+    )
+
+
 def bye(call_id: str) -> bytes:
     """Build a BYE from the gateway."""
     return sip(
@@ -145,6 +159,8 @@ class GatewayLineTests(unittest.IsolatedAsyncioTestCase):
     async def test_incoming_call_from_door_to_external_phone(self) -> None:
         """An answered call is matched to its door and phone, then ends on BYE."""
         await self._receive(invite("call-1", "*111", HA_NUMBER))
+        assert [type(e) for e in self.events] == [IncomingCall]
+        await self._receive(ack("call-1"))
 
         incoming, started = self.events
         assert isinstance(incoming, IncomingCall)
@@ -247,6 +263,7 @@ class GatewayLineTests(unittest.IsolatedAsyncioTestCase):
         self.line.subscribe(seen.append)
 
         await self._receive(invite("call-4", "*111", HA_NUMBER))
+        await self._receive(ack("call-4"))
 
         assert len(seen) == 2
         assert "call-4" in self.line.calls

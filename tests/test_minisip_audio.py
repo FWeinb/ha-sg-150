@@ -129,6 +129,7 @@ class MiniSIPAudioTests(unittest.IsolatedAsyncioTestCase):
         }
 
         await server.handle_invite(invite, ("192.168.1.20", 5060))
+        await server.handle_ack({"Call-ID": "call-123"}, ("192.168.1.20", 5060))
 
         assert "call-123" in server.active_calls
         assert server.active_calls["call-123"].addr == ("192.168.1.20", 5060)

@@ -8,11 +8,11 @@ calls are answered, and which SG150Device is on either end of a call.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 from .const import LOGGER
+from .sip.minisip import sip_user
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping
@@ -21,8 +21,6 @@ if TYPE_CHECKING:
     from .types import SG150Device
 
 type Direction = Literal["incoming", "outgoing"]
-
-_SIP_USER = re.compile(r"sips?:([^@;>]+)@")
 
 
 class LineError(Exception):
@@ -115,10 +113,9 @@ def match_device(header: str, devices: Iterable[SG150Device]) -> SG150Device | N
     the external PBX extension. If nothing matches exactly, a bare extension is
     accepted when exactly one device has it.
     """
-    match = _SIP_USER.search(header or "")
-    if match is None:
+    user = sip_user(header)
+    if user is None:
         return None
-    user = match.group(1)
 
     endpoints = [
         (device, device.phone_endpoint)
