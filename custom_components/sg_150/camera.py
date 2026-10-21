@@ -14,6 +14,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.httpx_client import get_async_client
 
 from .const import LOGGER, MANUFACTURER
+from .line import CallEnded, CallStarted
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -24,7 +25,7 @@ if TYPE_CHECKING:
 
     from .coordinator import SG150Coordinator
     from .data import SG150ConfigEntry
-    from .sip.minisip import MiniSIPServer
+    from .line import GatewayLine, LineEvent
     from .types import SG150Device
 
 
@@ -56,7 +57,7 @@ async def async_setup_entry(
                     coordinator=entry.runtime_data.coordinator,
                     device=device,
                     url=video_extraction.url,
-                    minisip=entry.runtime_data.server,
+                    line=entry.runtime_data.line,
                 )
             )
 
@@ -116,12 +117,13 @@ class SG150Camera(Camera):  # pylint: disable=abstract-method
         coordinator: SG150Coordinator,
         device: SG150Device,
         url: str,
-        minisip: MiniSIPServer,
+        line: GatewayLine,
     ) -> None:
         """Initialize the doorbell event entity."""
         super().__init__()
         self._stream_url = url
-        self._minisip = minisip
+        self._line = line
+        self._device_id = device.id
         self._attr_is_streaming = False
         self._attr_unique_id = device.id + "Camera"
         self._attr_device_info = DeviceInfo(
@@ -131,26 +133,23 @@ class SG150Camera(Camera):  # pylint: disable=abstract-method
             via_device=coordinator.get_gateway_identifier(),
         )
 
-    async def _async_update_call_state(self, *_: object) -> None:
-        """Update the camera state when a SIP call starts or ends."""
-        # Assume this camera is active when there is any active call
-        # technically we would need to check if there is a call to this specific camera
-        # but i don't have the info here yet...
-        self._attr_is_streaming = bool(self._minisip.active_calls)
-        self.async_write_ha_state()
+    def _update_call_state(self) -> None:
+        """Stream while a call to or from this device is established."""
+        self._attr_is_streaming = any(
+            call.involves(self._device_id) for call in self._line.calls.values()
+        )
+
+    def _on_line_event(self, event: LineEvent) -> None:
+        """Update the camera state when a call starts or ends."""
+        if isinstance(event, (CallStarted, CallEnded)):
+            self._update_call_state()
+            self.async_write_ha_state()
 
     async def async_added_to_hass(self) -> None:
-        """Register for SIP call state changes."""
-        self.async_on_remove(
-            self._minisip.add_listener(
-                "on_call_established", self._async_update_call_state
-            )
-        )
-        self.async_on_remove(
-            self._minisip.add_listener("on_call_ended", self._async_update_call_state)
-        )
+        """Subscribe to line events."""
+        self.async_on_remove(self._line.subscribe(self._on_line_event))
         await super().async_added_to_hass()
-        await self._async_update_call_state()
+        self._update_call_state()
 
     async def stream_source(self) -> str:
         """Return the stream source, also used by HomeKit to support MJEPG streams."""

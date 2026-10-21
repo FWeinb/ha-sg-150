@@ -3,7 +3,12 @@
 import re
 import unittest
 
-from custom_components.sg_150.sip.minisip import CallContext, MiniSIPServer, md5_hex
+from custom_components.sg_150.sip.minisip import (
+    CallContext,
+    MiniSIPServer,
+    SIPDialog,
+    md5_hex,
+)
 from tests.utils import FakeTransport
 
 
@@ -56,7 +61,7 @@ class MiniSIPBehaviorTests(unittest.IsolatedAsyncioTestCase):
         await server.handle_register(message, ("192.168.1.50", 5060))
 
         assert "alice" in server.registrations
-        assert server.registrations["alice"]["addr"] == ("192.168.1.50", 5060)
+        assert server.registrations["alice"].addr == ("192.168.1.50", 5060)
         assert server.transport.sent
         assert server.transport.sent[-1][0].startswith(b"SIP/2.0 200 OK")
 
@@ -93,7 +98,7 @@ class MiniSIPBehaviorTests(unittest.IsolatedAsyncioTestCase):
         assert server.transport.sent[0][0].startswith(b"SIP/2.0 180 Ringing")
         assert server.transport.sent[1][0].startswith(b"SIP/2.0 200 OK")
         assert "call-123" in server.active_calls
-        assert server.active_calls["call-123"][0] == ("192.168.1.10", 5060)
+        assert server.active_calls["call-123"].addr == ("192.168.1.10", 5060)
 
     async def test_handle_bye_closes_call_and_returns_ok(self) -> None:
         """BYE should close the active call and answer with a success response."""
@@ -103,12 +108,13 @@ class MiniSIPBehaviorTests(unittest.IsolatedAsyncioTestCase):
             call_host="127.0.0.1",
         )
         server.transport = FakeTransport()
-        server.active_calls["call-456"] = (
-            ("192.168.1.10", 5060),
-            "<sip:1001@192.168.1.10>",
-            "<sip:2000@127.0.0.1>",
-            "<sip:1001@192.168.1.10>",
-            {},
+        server.active_calls["call-456"] = SIPDialog(
+            call_id="call-456",
+            direction="incoming",
+            addr=("192.168.1.10", 5060),
+            from_header="<sip:1001@192.168.1.10>",
+            to_header="<sip:2000@127.0.0.1>",
+            contact="<sip:1001@192.168.1.10>",
         )
 
         await server.handle_bye(

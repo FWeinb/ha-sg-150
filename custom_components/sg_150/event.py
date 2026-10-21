@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 from typing import TYPE_CHECKING
 
 from homeassistant.components.event import (
@@ -11,8 +10,9 @@ from homeassistant.components.event import (
     EventEntity,
 )
 
-from .const import CONF_SIP_AUTO_ANSWER, LOGGER
+from .const import LOGGER
 from .entity import SG150PushDeviceEntity
+from .line import IncomingCall
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
     from .coordinator import SG150Coordinator
     from .data import SG150ConfigEntry
-    from .sip.minisip import CallContext, MiniSIPServer
+    from .line import GatewayLine, LineEvent
     from .types import SG150Device
 
 
@@ -39,8 +39,7 @@ async def async_setup_entry(
             SG150RingingEvent(
                 coordinator=entry.runtime_data.coordinator,
                 device=device,
-                minisip=entry.runtime_data.server,
-                auto_answer=entry.options.get(CONF_SIP_AUTO_ANSWER, True),
+                line=entry.runtime_data.line,
             )
             for device in entry.runtime_data.coordinator.data.devices
             if device.is_external_pbx_phone
@@ -58,27 +57,34 @@ class SG150RingingEvent(SG150PushDeviceEntity, EventEntity):
         self,
         coordinator: SG150Coordinator,
         device: SG150Device,
-        minisip: MiniSIPServer,
-        auto_answer: bool,  # noqa: FBT001
+        line: GatewayLine,
     ) -> None:
         """Initialize the doorbell event entity."""
         super().__init__(coordinator, device, name="Bell")
         self._attr_event_types = [DoorbellEventType.RING, "ringing"]
-        self._minisip = minisip
-        self._auto_answer = auto_answer
+        self._line = line
         self.icon = "mdi:bell-ring"
 
-    async def async_update_state(self, call_context: CallContext) -> bool:
-        """Update the ringing state based on the call_context."""
-        LOGGER.info("Got called %s", call_context)
+    def _on_line_event(self, event: LineEvent) -> None:
+        """Ring when this device is being called."""
+        if not isinstance(event, IncomingCall) or event.call.callee is None:
+            return
+        if event.call.callee.id != self._device_id:
+            return
 
-        self._trigger_event("ringing", dataclasses.asdict(call_context))
-        self.schedule_update_ha_state()
-        # Return True to indicate that the call should be auto-answered
-        return self._auto_answer
+        call = event.call
+        LOGGER.info("Got called %s", call)
+        self._trigger_event(
+            "ringing",
+            {
+                "call_id": call.id,
+                "called_from": call.from_header,
+                "called_to": call.to_header,
+                "addr": call.addr,
+            },
+        )
+        self.async_write_ha_state()
 
     async def async_added_to_hass(self) -> None:
-        """Register on_incoming_call callback with SipServer."""
-        self.async_on_remove(
-            self._minisip.add_listener("on_incoming_call", self.async_update_state)
-        )
+        """Subscribe to line events."""
+        self.async_on_remove(self._line.subscribe(self._on_line_event))

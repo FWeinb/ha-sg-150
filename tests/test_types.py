@@ -1,18 +1,9 @@
 """Tests for the typed device capability accessors."""
 
-import json
 import unittest
-from pathlib import Path
 
-from custom_components.sg_150.types import SG150DeviceCallNumber, SG150Devices
-
-FIXTURES = Path(__file__).parent / "fixtures"
-
-
-def load_devices() -> dict[str, object]:
-    """Load the system/devices fixture keyed by device id."""
-    payload = json.loads((FIXTURES / "system_devices.json").read_text())
-    return {device.id: device for device in SG150Devices(**payload).devices}
+from custom_components.sg_150.types import SG150DeviceCallNumber
+from tests.utils import load_devices
 
 
 class DeviceCapabilityTests(unittest.TestCase):

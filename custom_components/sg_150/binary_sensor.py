@@ -11,8 +11,8 @@ from homeassistant.const import (
 )
 from homeassistant.util.dt import as_local
 
-from .const import CONF_SIP_USER
 from .entity import SG150PushEntity
+from .line import Registered, Unregistered
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
     from .coordinator import SG150Coordinator
     from .data import SG150ConfigEntry
-    from .sip.minisip import MiniSIPServer
+    from .line import GatewayLine, LineEvent
 
 
 async def async_setup_entry(
@@ -32,8 +32,7 @@ async def async_setup_entry(
     entites = [
         SipRegistered(
             coordinator=entry.runtime_data.coordinator,
-            user=entry.options.get(CONF_SIP_USER),
-            minisip=entry.runtime_data.server,
+            line=entry.runtime_data.line,
         )
     ]
     async_add_entities(entites)
@@ -47,36 +46,32 @@ class SipRegistered(SG150PushEntity, BinarySensorEntity):
     _attr_translation_key = "sip_connection"
     icon = "mdi:server-network-outline"
 
-    def __init__(
-        self, coordinator: SG150Coordinator, user: str, minisip: MiniSIPServer
-    ) -> None:
+    def __init__(self, coordinator: SG150Coordinator, line: GatewayLine) -> None:
         """Create a new SipRegistered entity."""
         super().__init__(coordinator)
-        self._user = user
-        self._minisip = minisip
-        self._attr_extra_state_attributes = {"user": user}
+        self._line = line
+        self._attr_extra_state_attributes = {"user": line.user}
 
         self.update_state()
 
     async def async_added_to_hass(self) -> None:
-        """Subscribe to on_register events."""
-        self.async_on_remove(
-            self._minisip.add_listener("on_register", self.async_update_state)
-        )
+        """Subscribe to line events."""
+        self.async_on_remove(self._line.subscribe(self._on_line_event))
 
-    async def async_update_state(self, _: str, __: (str, int)) -> None:
-        """on_register callback."""
-        self.update_state()
-        self.schedule_update_ha_state()
+    def _on_line_event(self, event: LineEvent) -> None:
+        """Update when the registration changes."""
+        if isinstance(event, (Registered, Unregistered)):
+            self.update_state()
+            self.async_write_ha_state()
 
     def update_state(self) -> None:
         """Update the boolean state of the binary entity."""
-        registration = self._minisip.registrations.get(self._user, None)
-        addr = registration["addr"] if registration is not None else None
-        self._attr_is_on = addr is not None
-        if self._attr_is_on:
+        registration = self._line.registration
+        self._attr_is_on = registration is not None
+        if registration is not None:
+            addr = registration.addr
             expires_at = as_local(
-                datetime.fromtimestamp(registration["expires_at"], tz=UTC)
+                datetime.fromtimestamp(registration.expires_at, tz=UTC)
             )
 
             self._attr_extra_state_attributes.update(
