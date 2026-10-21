@@ -126,6 +126,10 @@
                 "to": {
                     "name": "Telefonnummer die Angerufen wird.",
                     "description": "Die vollständige Telefonnummer (mit Präfix, ohne Leerzeichen) welche im In-Home System angerufen wird."
+                },
+                "config_entry_id": {
+                    "name": "Gateway",
+                    "description": "Das zu verwendende SG-150 Gateway. Kann weggelassen werden, wenn nur ein Gateway eingerichtet ist."
                 }
             }
         },
@@ -136,6 +140,10 @@
                 "call_id": {
                     "name": "Identifkation des Anrufes",
                     "description": "Die Anrufsidentifkiaton von einem vorher gestarteten Anruf."
+                },
+                "config_entry_id": {
+                    "name": "Gateway",
+                    "description": "Das zu verwendende SG-150 Gateway. Kann weggelassen werden, wenn nur ein Gateway eingerichtet ist."
                 }
             }
         },
@@ -154,13 +162,22 @@
                 "duration": {
                     "name": "Dauer des Signals",
                     "description": "Die Dauer des zu sendenden DTMF Signals in Millisekunden (default: 100ms)"
+                },
+                "config_entry_id": {
+                    "name": "Gateway",
+                    "description": "Das zu verwendende SG-150 Gateway. Kann weggelassen werden, wenn nur ein Gateway eingerichtet ist."
                 }
             }
         },
         "get_active_calls": {
             "name": "Aktive Anrufe abfragen",
-            "description": "Gibt eine Liste der aktiven Anrufsidentifkiatonen zurück.",
-            "fields": {}
+            "description": "Gibt die aktiven Anrufsidentifikationen und für jeden Anruf die Richtung sowie das anrufende und angerufene Gerät zurück.",
+            "fields": {
+                "config_entry_id": {
+                    "name": "Gateway",
+                    "description": "Das zu verwendende SG-150 Gateway. Kann weggelassen werden, wenn nur ein Gateway eingerichtet ist."
+                }
+            }
         },
         "play_audio": {
             "name": "Spiele eine Audiodatei",
@@ -173,6 +190,10 @@
                 "media_source_id": {
                     "name": "Media Quellen Identifikation",
                     "description": "Eine Homessistant Quellen Identifikatio "
+                },
+                "config_entry_id": {
+                    "name": "Gateway",
+                    "description": "Das zu verwendende SG-150 Gateway. Kann weggelassen werden, wenn nur ein Gateway eingerichtet ist."
                 }
             }
         }

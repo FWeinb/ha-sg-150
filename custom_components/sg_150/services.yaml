@@ -4,6 +4,11 @@ start_call:
       required: true
       selector:
         text:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: sg_150
 
 stop_call:
   fields:
@@ -11,6 +16,11 @@ stop_call:
       required: true
       selector:
         text:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: sg_150
 
 send_sip_info_dtmf:
   fields:
@@ -26,6 +36,11 @@ send_sip_info_dtmf:
       required: false
       selector:
         text:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: sg_150
 
 play_audio:
   fields:
@@ -37,6 +52,16 @@ play_audio:
       required: true
       selector:
         text:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: sg_150
 
 get_active_calls:
-  fields: {}
+  fields:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: sg_150

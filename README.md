@@ -17,6 +17,7 @@ Currently the integration exposes:
   - send_sip_info_dtmf: Sends a DTMF signal to the Siedle Gateway during an In-Home phone call
   - get_active_calls: Returns a list of active call IDs (`active_calls`) and, in `calls`, each call's direction and the caller/callee device (`id`, `name`) when known.
   - play_audio: Play a media_source_id to an active call (Supporting wav/mp3, see [Tips & Tricks](#tips--tricks)) 
+  - Every action takes an optional `config_entry_id` to pick the gateway; it can be omitted when only one gateway is set up.
 
 # Disclaimer
 

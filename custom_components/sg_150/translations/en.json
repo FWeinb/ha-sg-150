@@ -126,6 +126,10 @@
                 "to": {
                     "name": "Number To Call",
                     "description": "The full phone number (including the prefix, without spaces) to be called via the In-Home system"
+                },
+                "config_entry_id": {
+                    "name": "Gateway",
+                    "description": "The SG-150 gateway to use. Can be omitted when only one gateway is set up."
                 }
             }
         },
@@ -136,6 +140,10 @@
                 "call_id": {
                     "name": "Call Identifier",
                     "description": "The call id from a previous started phone call"
+                },
+                "config_entry_id": {
+                    "name": "Gateway",
+                    "description": "The SG-150 gateway to use. Can be omitted when only one gateway is set up."
                 }
             }
         },
@@ -154,13 +162,22 @@
                 "duration": {
                     "name": "Duration",
                     "description": "The duration of the DTMF signal in milliseconds (default: 100ms)"
+                },
+                "config_entry_id": {
+                    "name": "Gateway",
+                    "description": "The SG-150 gateway to use. Can be omitted when only one gateway is set up."
                 }
             }
         },
         "get_active_calls": {
             "name": "Get Active Calls",
-            "description": "Returns a list of active call IDs.",
-            "fields": {}
+            "description": "Returns the active call IDs and, for each call, its direction and the caller and callee devices.",
+            "fields": {
+                "config_entry_id": {
+                    "name": "Gateway",
+                    "description": "The SG-150 gateway to use. Can be omitted when only one gateway is set up."
+                }
+            }
         },
         "play_audio": {
             "name": "Play Audio",
@@ -173,6 +190,10 @@
                 "media_source_id": {
                     "name": "Media Source ID",
                     "description": "Existing Home Assistant media source ID for speech audio"
+                },
+                "config_entry_id": {
+                    "name": "Gateway",
+                    "description": "The SG-150 gateway to use. Can be omitted when only one gateway is set up."
                 }
             }
         }
