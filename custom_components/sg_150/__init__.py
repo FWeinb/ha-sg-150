@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.loader import async_get_loaded_integration
 
@@ -23,17 +24,21 @@ from .const import (
     CONF_SIP_PASSWORD,
     CONF_SIP_PORT,
     CONF_SIP_USER,
+    DOMAIN,
 )
 from .coordinator import SG150Coordinator
 from .data import SG150RuntimeData
 from .line import GatewayLine
-from .services import setup_services
+from .services import async_setup_services
 from .sip.minisip import MiniSIPServer
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
+    from homeassistant.helpers.typing import ConfigType
 
     from .data import SG150ConfigEntry
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 PLATFORMS: list[Platform] = [
     Platform.EVENT,
@@ -42,6 +47,12 @@ PLATFORMS: list[Platform] = [
     Platform.BINARY_SENSOR,
     Platform.BUTTON,
 ]
+
+
+async def async_setup(hass: HomeAssistant, _: ConfigType) -> bool:
+    """Register the services once per Home Assistant instance."""
+    async_setup_services(hass)
+    return True
 
 
 async def async_setup_entry(
@@ -88,8 +99,6 @@ async def async_setup_entry(
     entry.async_on_unload(entry.add_update_listener(async_reload_entry))
 
     await line.start()
-
-    setup_services(hass, line=line)
 
     return True
 
