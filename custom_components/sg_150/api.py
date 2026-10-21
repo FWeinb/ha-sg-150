@@ -3,15 +3,26 @@
 from __future__ import annotations
 
 import asyncio
+import binascii
+import mimetypes
 import socket
+from base64 import b64decode
 from hashlib import sha256
 from time import time
 from typing import Any
 
 import aiohttp
+from pydantic import ValidationError
 
 from .const import LOGGER
-from .types import OAuthTokenResponse, SG150Devices, SG150MaschineInfo
+from .types import (
+    OAuthTokenResponse,
+    SG150Devices,
+    SG150MaschineInfo,
+    SG150StoredImage,
+    SG150StoredImageContent,
+    SG150StoredImages,
+)
 
 
 class SG150ApiClientError(Exception):
@@ -123,6 +134,50 @@ class SG150ApiClient:
             authenticate=True,
         )
 
+    async def async_get_stored_images(self, device_id: str) -> list[SG150StoredImage]:
+        """Get the images the gateway stored for calls to a device."""
+        response = await self._api_wrapper(
+            method="GET",
+            route="video/imageStore/images",
+            params={"deviceId": device_id},
+            authenticate=True,
+        )
+        try:
+            return SG150StoredImages.model_validate(response).images
+        except ValidationError as exception:
+            msg = f"Unexpected image list from the gateway - {exception}"
+            raise SG150ApiClientError(msg) from exception
+
+    async def async_get_stored_image(self, uid: str) -> tuple[bytes, str]:
+        """
+        Download a stored image, returning its bytes and content type.
+
+        The gateway returns the image's metadata with the picture base64 encoded
+        in `content`; the content type is taken from the file name.
+        """
+        response = await self._api_wrapper(
+            method="GET",
+            route=f"video/imageStore/images/{uid}",
+            authenticate=True,
+        )
+        try:
+            image = SG150StoredImageContent.model_validate(response)
+        except ValidationError as exception:
+            msg = f"Unexpected image from the gateway - {exception}"
+            raise SG150ApiClientError(msg) from exception
+
+        try:
+            body = b64decode(image.content, validate=True)
+        except binascii.Error as exception:
+            msg = f"Image {uid} has invalid base64 content - {exception}"
+            raise SG150ApiClientError(msg) from exception
+        if not body:
+            msg = f"Image {uid} has no content"
+            raise SG150ApiClientError(msg)
+
+        content_type, _ = mimetypes.guess_type(image.filename)
+        return body, content_type or "image/jpeg"
+
     async def async_trigger_light_switch(self) -> None:
         """Trigger the switch light."""
         await self._api_wrapper(
@@ -131,35 +186,35 @@ class SG150ApiClient:
             authenticate=True,
         )
 
-    async def _api_wrapper(  # noqa: PLR0913, PLR0917
+    async def _api_wrapper(  # noqa: PLR0913
         self,
         method: str,
         route: str,
+        *,
         data: dict | None = None,
         json: dict | None = None,
-        headers: dict | None = None,
-        authenticate: bool = False,  # noqa: FBT001, FBT002
-    ) -> dict[str, Any]:
-        """Get information from the API."""
+        params: dict | None = None,
+        authenticate: bool = False,
+    ) -> Any:
+        """Call the API and return the decoded JSON response."""
         try:
+            headers = None
             if authenticate:
                 await self.authenticate()
-                headers = headers or {}
-                headers.update(
-                    {
-                        "Authorization": f"Bearer {self._access_token}",
-                    }
-                )
-            async with asyncio.timeout(10):
-                async with self._session.request(
+                headers = {"Authorization": f"Bearer {self._access_token}"}
+            async with (
+                asyncio.timeout(10),
+                self._session.request(
                     method=method,
                     url=f"http://{self._host_address}:{self._port}/api/op/v1.0/{route}",
                     headers=headers,
                     data=data,
                     json=json,
-                ) as response:
-                    _verify_response_or_raise(response)
-                    return await response.json()
+                    params=params,
+                ) as response,
+            ):
+                _verify_response_or_raise(response)
+                return await response.json()
 
         except SG150ApiClientError:
             raise

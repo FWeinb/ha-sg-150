@@ -1,0 +1,30 @@
+{
+  "images": [
+    {
+      "id": 108,
+      "uid": "0b6f2c1e-6d41-4f0e-9a43-2f1d7c9b5a10",
+      "cameraName": "Haustür",
+      "timestamp": "2026-10-10T08:02:11+00:00",
+      "callId": "5c2d4f6a-8b1e-4d3c-9f7a-1e2d3c4b5a69",
+      "filename": "108_2026-10-10T08:02:11+00:00.jpg",
+      "permissions": [
+        {
+          "id": "d677ce65-a35b-4396-b314-208bf87e5d2a"
+        }
+      ]
+    },
+    {
+      "id": 109,
+      "uid": "db3f391a-cdad-47e7-bd29-7fb4d5201a7d",
+      "cameraName": "Haustür",
+      "timestamp": "2026-10-11T15:11:54+00:00",
+      "callId": "82919e27-ba71-4ff0-8f73-6a649fd63d21",
+      "filename": "109_2026-10-11T15:11:54+00:00.jpg",
+      "permissions": [
+        {
+          "id": "d677ce65-a35b-4396-b314-208bf87e5d2a"
+        }
+      ]
+    }
+  ]
+}
