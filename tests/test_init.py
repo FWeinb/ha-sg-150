@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import pytest
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.helpers import device_registry as dr
 
@@ -59,7 +58,6 @@ async def test_unload_stops_sip_and_keeps_services(
     assert response == {"error": "No SG-150 gateway is loaded"}
 
 
-@pytest.mark.xfail(reason="the config flow has no reauth step", strict=True)
 async def test_rejected_credentials_on_update_start_reauth(
     hass: HomeAssistant,
     config_entry: MockConfigEntry,
@@ -77,11 +75,6 @@ async def test_rejected_credentials_on_update_start_reauth(
     assert [flow["context"]["source"] for flow in flows] == ["reauth"]
 
 
-@pytest.mark.xfail(
-    reason="machine info auth errors are not ConfigEntryAuthFailed, and the "
-    "config flow has no reauth step; setup retries forever instead",
-    strict=True,
-)
 async def test_rejected_credentials_during_setup_start_reauth(
     hass: HomeAssistant,
     config_entry: MockConfigEntry,
