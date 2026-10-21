@@ -73,7 +73,7 @@ class SG150ApiClient:
 
     async def authenticate(self) -> str:
         """Authenticate with the API."""
-        if not hasattr(self, "_access_token") or int(time()) >= self._next_refresh_at:
+        if self._access_token is None or int(time()) >= self._next_refresh_at:
             form_data = aiohttp.FormData()
             form_data.add_field("grant_type", "password")
             form_data.add_field("client_id", "dcip2web")
@@ -151,16 +151,18 @@ class SG150ApiClient:
                     }
                 )
             async with asyncio.timeout(10):
-                response = await self._session.request(
+                async with self._session.request(
                     method=method,
                     url=f"http://{self._host_address}:{self._port}/api/op/v1.0/{route}",
                     headers=headers,
                     data=data,
                     json=json,
-                )
-                _verify_response_or_raise(response)
-                return await response.json()
+                ) as response:
+                    _verify_response_or_raise(response)
+                    return await response.json()
 
+        except SG150ApiClientError:
+            raise
         except TimeoutError as exception:
             msg = f"Timeout error fetching information - {exception}"
             raise SG150ApiClientCommunicationError(
