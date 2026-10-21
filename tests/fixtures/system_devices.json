@@ -1,0 +1,175 @@
+{
+  "devices": [
+    {
+      "id": "door-front",
+      "name": "Front Door",
+      "type": "INHOME",
+      "capabilities": [
+        {
+          "type": "IN_HOME",
+          "properties": {
+            "inHomeAddress": {"lineAddress": 1, "deviceAddress": 1},
+            "description": "Front door station",
+            "deviceType": "SMART_DOOR_STATION",
+            "hasVideo": true,
+            "hasAudio": true,
+            "automationItems": []
+          }
+        },
+        {
+          "type": "PHONE_ENDPOINT",
+          "properties": {
+            "callNumber": {"prefix": "*1", "extension": "11"},
+            "isDoor": true,
+            "pbxSystem": {
+              "id": "pbx-internal",
+              "name": "Smart Gateway",
+              "type": "INTERNAL",
+              "externalExtension": {"prefix": null, "extension": null}
+            }
+          }
+        },
+        {
+          "type": "VIDEO_EXTRACTION",
+          "properties": {
+            "enabled": true,
+            "type": "MJPEG_STREAM",
+            "url": "http://192.0.2.10/video/door-front.mjpeg"
+          }
+        },
+        {
+          "type": "VIDEO_SENDER",
+          "properties": {"cameraId": "camera-front"}
+        }
+      ]
+    },
+    {
+      "id": "door-back",
+      "name": "Back Door",
+      "type": "INHOME",
+      "capabilities": [
+        {
+          "type": "IN_HOME",
+          "properties": {
+            "inHomeAddress": {"lineAddress": 1, "deviceAddress": 2},
+            "description": "Back door station",
+            "deviceType": "DOOR_STATION",
+            "hasVideo": true,
+            "hasAudio": true,
+            "automationItems": []
+          }
+        },
+        {
+          "type": "PHONE_ENDPOINT",
+          "properties": {
+            "callNumber": {"prefix": "*1", "extension": "12"},
+            "isDoor": true,
+            "pbxSystem": {
+              "id": "pbx-internal",
+              "name": "Smart Gateway",
+              "type": "INTERNAL",
+              "externalExtension": {"prefix": null, "extension": null}
+            }
+          }
+        },
+        {
+          "type": "VIDEO_EXTRACTION",
+          "properties": {
+            "enabled": true,
+            "type": "SNAPSHOT",
+            "url": "http://192.0.2.10/video/door-back.jpg"
+          }
+        }
+      ]
+    },
+    {
+      "id": "indoor-hall",
+      "name": "Hall Indoor Station",
+      "type": "INHOME",
+      "capabilities": [
+        {
+          "type": "IN_HOME",
+          "properties": {
+            "inHomeAddress": {"lineAddress": 1, "deviceAddress": 20},
+            "description": "Hall indoor station",
+            "deviceType": "INDOOR_STATION",
+            "hasVideo": true,
+            "hasAudio": true,
+            "automationItems": []
+          }
+        },
+        {
+          "type": "AUTOMATION_TILE",
+          "properties": {"assignedTiles": []}
+        }
+      ]
+    },
+    {
+      "id": "pbx-external",
+      "name": "Home Assistant",
+      "type": "PBXPHONE",
+      "capabilities": [
+        {
+          "type": "PHONE_ENDPOINT",
+          "properties": {
+            "callNumber": {"prefix": "*2", "extension": "620"},
+            "isDoor": false,
+            "pbxSystem": {
+              "id": "pbx-external",
+              "name": "External PBX",
+              "type": "EXTERNAL",
+              "externalExtension": {"prefix": "0", "extension": "620"}
+            }
+          }
+        },
+        {
+          "type": "CTI_PHONE",
+          "properties": {"id": null, "name": null}
+        },
+        {
+          "type": "IN_HOME_VIRTUAL",
+          "properties": {
+            "addressAssigned": true,
+            "assignedAddress": {
+              "id": "virtual-1",
+              "name": "Virtual Indoor Station",
+              "inHomeAddress": {"lineAddress": 1, "deviceAddress": 30}
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "pbx-internal-phone",
+      "name": "Kitchen Phone",
+      "type": "PBXPHONE",
+      "capabilities": [
+        {
+          "type": "PHONE_ENDPOINT",
+          "properties": {
+            "callNumber": {"prefix": null, "extension": "21"},
+            "isDoor": false,
+            "pbxSystem": {
+              "id": "pbx-internal",
+              "name": "Smart Gateway",
+              "type": "INTERNAL",
+              "externalExtension": {"prefix": null, "extension": null}
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "app-phone",
+      "name": "Siedle App",
+      "type": "SUSAPP",
+      "capabilities": [
+        {"type": "SUS_APP", "properties": {}},
+        {
+          "type": "AUTOMATION",
+          "properties": {"controllerId": "controller-1", "automationItems": []}
+        }
+      ]
+    }
+  ]
+}

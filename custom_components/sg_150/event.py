@@ -13,7 +13,6 @@ from homeassistant.components.event import (
 
 from .const import CONF_SIP_AUTO_ANSWER, LOGGER
 from .entity import SG150PushDeviceEntity
-from .helpers import get_phone_endpoint_capability, is_external_pbx_phone
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -44,7 +43,7 @@ async def async_setup_entry(
                 auto_answer=entry.options.get(CONF_SIP_AUTO_ANSWER, True),
             )
             for device in entry.runtime_data.coordinator.data.devices
-            if is_external_pbx_phone(device)
+            if device.is_external_pbx_phone
         ]
     )
 
@@ -68,9 +67,6 @@ class SG150RingingEvent(SG150PushDeviceEntity, EventEntity):
         self._minisip = minisip
         self._auto_answer = auto_answer
         self.icon = "mdi:bell-ring"
-
-        phone_endpoint = get_phone_endpoint_capability(device)
-        self._phone_number = phone_endpoint.properties.callNumber
 
     async def async_update_state(self, call_context: CallContext) -> bool:
         """Update the ringing state based on the call_context."""

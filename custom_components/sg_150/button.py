@@ -7,11 +7,6 @@ from typing import TYPE_CHECKING
 from homeassistant.components.button import ButtonEntity
 
 from .entity import SG150BaseDeviceEntity, SG150BaseEntity
-from .helpers import (
-    get_phone_endpoint_capability,
-    has_phone_endpoint,
-    is_door,
-)
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -36,7 +31,7 @@ async def async_setup_entry(
                 device=device,
             )
             for device in entry.runtime_data.coordinator.data.devices
-            if is_door(device) and has_phone_endpoint(device)
+            if device.is_door
         ]
     )
 
@@ -57,11 +52,11 @@ class DoorOpenerButton(SG150BaseDeviceEntity, ButtonEntity):
 
     async def async_press(self) -> None:
         """Handle the button press."""
-        device = self.get_device()
-        phone_capabilty = get_phone_endpoint_capability(device)
-        call_number = phone_capabilty.properties.callNumber
+        phone_endpoint = self.get_device().phone_endpoint
+        if phone_endpoint is None:
+            return
         await self.coordinator.get_api_client().async_trigger_door_opener(
-            f"{call_number.prefix}{call_number.extension}"
+            phone_endpoint.callNumber.dialable
         )
 
 

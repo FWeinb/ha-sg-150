@@ -10,12 +10,6 @@ from homeassistant.const import (
 )
 
 from .entity import SG150BaseDeviceEntity, SG150BaseEntity
-from .helpers import (
-    get_in_home_capability,
-    get_phone_endpoint_capability,
-    has_phone_endpoint,
-    is_door,
-)
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -35,7 +29,7 @@ async def async_setup_entry(
     entites = [MacAddressSensor(coordinator=entry.runtime_data.coordinator)]
 
     for device in entry.runtime_data.coordinator.data.devices:
-        if is_door(device):
+        if device.is_door:
             entites.extend(
                 [
                     DoorTypeSensor(
@@ -44,7 +38,7 @@ async def async_setup_entry(
                     )
                 ]
             )
-        if has_phone_endpoint(device):
+        if device.phone_endpoint is not None:
             entites.extend(
                 [
                     PhoneNumber(
@@ -71,9 +65,8 @@ class DoorTypeSensor(SG150BaseDeviceEntity, SensorEntity):
     @property
     def native_value(self) -> str | None:
         """Return the native value of the sensor."""
-        device = self.get_device()
-        in_home_capability = get_in_home_capability(device)
-        return in_home_capability.properties.deviceType
+        in_home = self.get_device().in_home
+        return in_home.deviceType if in_home else None
 
 
 class PhoneNumber(SG150BaseDeviceEntity, SensorEntity):
@@ -90,10 +83,8 @@ class PhoneNumber(SG150BaseDeviceEntity, SensorEntity):
     @property
     def native_value(self) -> str | None:
         """Return the native value of the sensor."""
-        device = self.get_device()
-        phone_capabilty = get_phone_endpoint_capability(device)
-        call_number = phone_capabilty.properties.callNumber
-        return f"{call_number.prefix} {call_number.extension}"
+        phone_endpoint = self.get_device().phone_endpoint
+        return phone_endpoint.callNumber.display if phone_endpoint else None
 
 
 class MacAddressSensor(SG150BaseEntity, SensorEntity):
