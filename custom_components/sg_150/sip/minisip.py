@@ -15,6 +15,7 @@ import io
 import logging
 import os
 import random
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -40,6 +41,15 @@ def at_address(name: str, host: str) -> str:
 def sip_address(name: str, host: str) -> str:
     """Format name: host as an sip address."""
     return f"<sip:{at_address(name, host)}>"
+
+
+_SIP_USER = re.compile(r"sips?:([^@;>]+)@")
+
+
+def sip_user(header: str | None) -> str | None:
+    """Return the user part of the SIP URI in a From/To/Contact header."""
+    match = _SIP_USER.search(header or "")
+    return match.group(1) if match else None
 
 
 def md5_hex(data: str) -> str:
@@ -316,6 +326,8 @@ class MiniSIPServer:
         self.registrations: dict[str, SIPRegistration] = {}
         self.challenges = {}
         self.pending_invites = {}
+        # Accepted incoming calls waiting for the caller's ACK, by call id.
+        self.pending_acks: dict[str, SIPDialog] = {}
         self.active_calls: dict[str, SIPDialog] = {}
         self.rtp_sessions = {}
         self.last_cseq = {}
@@ -665,10 +677,12 @@ class MiniSIPServer:
                 accept = False
 
         if accept:
-            # Update headers to create a valid response with a tag in the To header
-            # and a Contact header that matches the To header we assume we always want
-            # to accept it.
-            message["Contact"] = message.get("To")
+            # Answer with a tag in the To header, and a Contact pointing at our own
+            # host and port so the caller's ACK and later requests reach us.
+            remote_contact = message.get("Contact")
+            message["Contact"] = sip_address(
+                sip_user(message.get("To")) or "", self.server_address()
+            )
             message["To"] = f"{message.get('To')};tag=minisip"
 
             ringing_resp = build_response(180, "Ringing", message)
@@ -703,20 +717,16 @@ class MiniSIPServer:
             self.transport.sendto(resp, addr)
 
             media = self.parse_sdp_media(message.get(":body"))
-            dialog = SIPDialog(
+            # The call is established once the caller ACKs our 200 OK.
+            self.pending_acks[call_id] = SIPDialog(
                 call_id=call_id,
                 direction="incoming",
                 addr=addr,
                 from_header=message.get("From"),
                 to_header=message.get("To"),
-                contact=message.get("Contact"),
+                contact=remote_contact,
                 media=media or {},
             )
-            self.active_calls[call_id] = dialog
-
-            # This is very optimistic as we did not recive the ACK here
-            # a better way would be to only fire this when the ACK was recived.
-            await self._fire_event("on_call_established", dialog)
             log_sip_event("INCOMING_CALL_ACCEPTED", addr=f"{addr}", call_id=call_id)
         else:
             resp = build_response(486, "Busy Here", message)
@@ -724,19 +734,33 @@ class MiniSIPServer:
             log_sip_event("INCOMING_CALL_REJECTED", addr=f"{addr}", call_id=call_id)
             await self._fire_event("on_call_busy", call_id, addr)
 
+    async def handle_ack(self, message: dict[str, str], addr: (str, int)) -> None:
+        """Handle the ACK method, which establishes an accepted incoming call."""
+        call_id = message.get("Call-ID")
+        dialog = self.pending_acks.pop(call_id, None)
+        if dialog is None:
+            return
+
+        self.active_calls[call_id] = dialog
+        log_sip_event("INCOMING_CALL_ESTABLISHED", addr=f"{addr}", call_id=call_id)
+        await self._fire_event("on_call_established", dialog)
+
     async def handle_bye(self, message: dict[str, str], addr: (str, int)) -> None:
         """Handle the BYE method."""
         call_id = message.get("Call-ID")
 
         self.transport.sendto(build_response(200, "OK", message), addr)
-        if call_id in self.active_calls:
+        if self.pending_acks.pop(call_id, None) is not None:
+            log_sip_event("CALL_ENDED_BEFORE_ACK", addr=f"{addr}", call_id=call_id)
+        elif call_id in self.active_calls:
             dialog = self.active_calls.pop(call_id)
             await self._fire_event("on_call_ended", dialog)
 
     async def handle_options(self, message: dict[str, str], addr: (str, int)) -> None:
         """Handle the OPTIONS method."""
         if not self.check_cseq(message, addr):
-            return build_response(400, "Bad Request", message)
+            self.transport.sendto(build_response(400, "Bad Request", message), addr)
+            return
 
         self.transport.sendto(
             build_response(
@@ -744,14 +768,12 @@ class MiniSIPServer:
                 "OK",
                 message,
                 extra_headers=[
-                    "Allow: REGISTER, ACK, INVITE",
+                    "Allow: REGISTER, INVITE, ACK, BYE, OPTIONS",
                     "Accept: application/sdp",
                 ],
             ),
             addr,
         )
-
-        return None
 
     async def send_invite(  # noqa: PLR0915
         self,
@@ -1018,7 +1040,7 @@ class MiniSIPServer:
         elif method == "OPTIONS":
             await self.handle_options(message, addr)
         elif method == "ACK":
-            pass
+            await self.handle_ack(message, addr)
         else:
             log_sip_event("SIP_METHOD_NOT_IMPLEMENTED", addr=f"{addr}", method=method)
             resp = build_response(501, "Not Implemented", message)

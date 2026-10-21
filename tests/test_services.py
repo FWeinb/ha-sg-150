@@ -14,7 +14,7 @@ from custom_components.sg_150.services import (
     handle_stop_call,
 )
 from custom_components.sg_150.sip.minisip import MiniSIPServer
-from tests.test_line import GATEWAY, HA_NUMBER, invite
+from tests.test_line import GATEWAY, HA_NUMBER, ack, invite
 from tests.utils import FakeTransport, load_devices
 
 
@@ -82,6 +82,7 @@ class ServiceTargetTests(unittest.IsolatedAsyncioTestCase):
         """With one gateway the call needs no target."""
         line, server = make_line()
         await server.handle_datagram(invite("call-1", "*111", HA_NUMBER), GATEWAY)
+        await server.handle_datagram(ack("call-1"), GATEWAY)
 
         response = await handle_get_active_calls(make_hass(line), service_call())
 
@@ -104,6 +105,7 @@ class ServiceTargetTests(unittest.IsolatedAsyncioTestCase):
         await second_server.handle_datagram(
             invite("call-2", "*111", HA_NUMBER), GATEWAY
         )
+        await second_server.handle_datagram(ack("call-2"), GATEWAY)
         hass = make_hass(first, second)
 
         response = await handle_get_active_calls(
@@ -140,6 +142,7 @@ class ServiceTargetTests(unittest.IsolatedAsyncioTestCase):
         """OPTIONAL services return nothing unless a response was asked for."""
         line, server = make_line()
         await server.handle_datagram(invite("call-3", "*111", HA_NUMBER), GATEWAY)
+        await server.handle_datagram(ack("call-3"), GATEWAY)
         hass = make_hass(line)
 
         unknown = await handle_stop_call(hass, service_call(call_id="missing"))
