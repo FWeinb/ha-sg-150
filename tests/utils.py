@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 
+from custom_components.sg_150.sip.rtp import RtpSession
 from custom_components.sg_150.types import SG150Device, SG150Devices
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -27,3 +28,10 @@ class FakeTransport:
 
     def close(self) -> None:
         """Do nothing, there is no socket to close."""
+
+
+async def fake_rtp_endpoint(session: RtpSession, host: str, port: int) -> None:
+    """Attach a FakeTransport to an RTP session instead of binding a socket."""
+    transport = FakeTransport()
+    transport.local_addr = (host, port)
+    session.connection_made(transport)

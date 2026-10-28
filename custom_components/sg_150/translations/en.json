@@ -24,7 +24,10 @@
                     "sip-password": "SIP Passwort",
                     "sip-port": "SIP Port",
                     "sip-number": "SIP Number",
-                    "sip-auto-answer": "SIP Auto Answer"
+                    "sip-auto-answer": "SIP Auto Answer",
+                    "two-way-audio": "Two-way audio",
+                    "rtp-port-min": "First RTP Port",
+                    "rtp-port-max": "Last RTP Port"
                 },
                 "data_description": {
                     "sip-caller-ip": "External ip address that will be used as the SIP Caller IP",
@@ -32,7 +35,10 @@
                     "sip-password": "Password used by the Siedle Gateway to authenticate with the SIP-Server",
                     "sip-port": "Port number Siedle Gateway will connect with the SIP-Server",
                     "sip-number": "Phone number configured in Siedle Gateway for the Softphone",
-                    "sip-auto-answer": "Automatically answer incoming SIP calls"
+                    "sip-auto-answer": "Automatically answer incoming SIP calls. With two-way audio enabled and this off, Home Assistant rings along and answers when you press talk in the camera's live view.",
+                    "two-way-audio": "Talk to the door station from the camera's live view over WebRTC. Needs the Two-way audio Labs feature and Home Assistant opened over HTTPS.",
+                    "rtp-port-min": "First UDP port for call audio. The Siedle Gateway must be able to reach the ports from the first to the last one, one per call at the same time.",
+                    "rtp-port-max": "Last UDP port for call audio"
                 }
             },
             "reauth_confirm": {
@@ -51,7 +57,8 @@
         "error": {
             "auth": "Username/Password is wrong.",
             "connection": "Unable to connect to the server.",
-            "unknown": "Unexpected error"
+            "unknown": "Unexpected error",
+            "rtp_ports": "The RTP ports must be numbers between 1024 and 65535, and the first must not be above the last."
         },
         "abort": {
             "already_configured": "Account is already configured",
@@ -68,16 +75,27 @@
                     "sip-user": "SIP Username",
                     "sip-password": "SIP Passwort",
                     "sip-port": "SIP Port",
-                    "sip-number": "SIP Number"
+                    "sip-number": "SIP Number",
+                    "sip-auto-answer": "SIP Auto Answer",
+                    "two-way-audio": "Two-way audio",
+                    "rtp-port-min": "First RTP Port",
+                    "rtp-port-max": "Last RTP Port"
                 },
                 "data_description": {
                     "sip-caller-ip": "External ip address that will be used as the SIP Caller IP",
                     "sip-user": "Username the Siedle Gateway will use to connect the SIP-Client",
                     "sip-password": "Password used by the Siedle Gateway to authenticate with the SIP-Server",
                     "sip-port": "Port number Siedle Gateway will connect with the SIP-Server",
-                    "sip-number": "Phone number configured in Siedle Gateway for the Softphone"
+                    "sip-number": "Phone number configured in Siedle Gateway for the Softphone",
+                    "sip-auto-answer": "Automatically answer incoming SIP calls. With two-way audio enabled and this off, Home Assistant rings along and answers when you press talk in the camera's live view.",
+                    "two-way-audio": "Talk to the door station from the camera's live view over WebRTC. Needs the Two-way audio Labs feature and Home Assistant opened over HTTPS.",
+                    "rtp-port-min": "First UDP port for call audio. The Siedle Gateway must be able to reach the ports from the first to the last one, one per call at the same time.",
+                    "rtp-port-max": "Last UDP port for call audio"
                 }
             }
+        },
+        "error": {
+            "rtp_ports": "The RTP ports must be numbers between 1024 and 65535, and the first must not be above the last."
         }
     },
     "entity": {
@@ -105,6 +123,9 @@
             },
             "light_switch": {
                 "name": "Lightswitch"
+            },
+            "hang_up": {
+                "name": "Hang Up"
             }
         },
         "sensor": {
@@ -209,6 +230,11 @@
                     "description": "The SG-150 gateway to use. Can be omitted when only one gateway is set up."
                 }
             }
+        }
+    },
+    "exceptions": {
+        "no_call_to_hang_up": {
+            "message": "There is no call to hang up"
         }
     }
 }

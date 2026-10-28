@@ -254,6 +254,14 @@ class SG150Device(BaseModel):
         return capability.properties if capability else None
 
     @property
+    def mjpeg_stream_url(self) -> str | None:
+        """Return the URL of the device's MJPEG stream, the camera's source."""
+        video_extraction = self.video_extraction
+        if video_extraction is None or video_extraction.type != "MJPEG_STREAM":
+            return None
+        return video_extraction.url
+
+    @property
     def in_home(self) -> SG150DeviceCapabilityInHomeProperties | None:
         """Return the IN_HOME properties, if the device has one."""
         capability = _find_capability(self.capabilities, SG150DeviceCapabilityInHome)

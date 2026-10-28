@@ -103,3 +103,17 @@ async def register(server: MiniSIPServer) -> None:
     await server.handle_datagram(
         sip(f"REGISTER sip:{HA_HOST} SIP/2.0", headers), GATEWAY
     )
+
+
+def cancel(call_id: str) -> bytes:
+    """Build the CANCEL the gateway sends when a handset answered first."""
+    return sip(
+        f"CANCEL sip:{HA_NUMBER}@{HA_HOST} SIP/2.0",
+        {
+            "Via": f"SIP/2.0/UDP {GATEWAY[0]}:{GATEWAY[1]};branch=z1",
+            "From": f"<sip:*111@{GATEWAY[0]}>;tag=gw",
+            "To": f"<sip:{HA_NUMBER}@{HA_HOST}>",
+            "Call-ID": call_id,
+            "CSeq": "1 CANCEL",
+        },
+    )

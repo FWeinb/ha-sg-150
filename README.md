@@ -6,18 +6,19 @@ This integration will run a minimal SIP Server that can be configured in the SG-
 
 Currently the integration exposes:
 
-- Gateway Information (Mac Adresse, SIP Connection Status)
-- All phone devices know to the SG-150
-  - Phone number sensor
-- All video extractors
-  - Camera for the live stream
-- Media source with the pictures the gateway stored during calls, per PBX phone (Media → Siedle Gateway)
+- Gateway information: MAC address, SIP connection status and a light switch button
+- All phone devices known to the SG-150, with their phone number
+- Door stations, with a door opener button
+- A camera for each video stream, with optional two-way audio (see [Two-way audio](#two-way-audio))
+- A bell that rings when the door station calls Home Assistant
+- A Hang Up button next to each camera
+- A media source with the pictures the gateway stored during calls, per PBX phone (Media → Siedle Gateway)
 - Actions to control the SG-150:
   - start_call: Start a phone call within the In-Home system
   - stop_call: Stop a phone call within the In-Home system
   - send_sip_info_dtmf: Sends a DTMF signal to the Siedle Gateway during an In-Home phone call
   - get_active_calls: Returns a list of active call IDs (`active_calls`) and, in `calls`, each call's direction and the caller/callee device (`id`, `name`) when known.
-  - play_audio: Play a media_source_id to an active call (Supporting wav/mp3, see [Tips & Tricks](#tips--tricks)) 
+  - play_audio: Play a media_source_id to an active call (Supporting wav/mp3, see [Tips & Tricks](#tips--tricks))
   - Every action takes an optional `config_entry_id` to pick the gateway; it can be omitted when only one gateway is set up.
 
 # Disclaimer
@@ -38,16 +39,51 @@ While setting up the integration within Home Assistant you will be asked to prov
 - Username (in most cases `admin`)
 - Password (the one used for the web interface)
 
-In addition to that the Home Assistant instance will also configure a SIP-Server, please make sure to setup the following values:
+## Options
 
-- SIP Caller IP: `<HomeAssistant-IP>`
-- SIP Username: `<NameOfYourChoosing>`
-- SIP Password: `<PasswordOfYourChoosing>`
-- SIP Number: `<PhoneNumberOfYourChoosing>`
-- SIP Port: `<PortOfYourChoosing>` (default: 5060)
-- SIP Auto Answer: `<AutoAnswerValue>` (default: True, determines if HA will automatically answer incoming calls from the SG-150 blocking the In-Home bus for other devices, needed so the video becomes available)
+Home Assistant then sets up its own SIP server, which the SG-150 connects to like a telephone. You choose these options during setup, and can change them later with **Configure** on the integration:
 
-These values will be used to configure the SG-150 to connect to the SIP-Server provided by this integration.
+| Option | Default | What it means |
+|---|---|---|
+| SIP Caller IP | | The IP address of your Home Assistant. The SG-150 uses it to reach Home Assistant. |
+| SIP Username | | A name of your choosing. You enter the same name in the SG-150. |
+| SIP Password | | A password of your choosing. You enter the same password in the SG-150. |
+| SIP Number | | The phone number Home Assistant has in your In-Home system. |
+| SIP Port | 5060 | The port the SG-150 connects to. |
+| SIP Auto Answer | On | Whether Home Assistant answers when the door station calls. The camera only gets a picture during a call. While Home Assistant holds a call, your other indoor stations can't take it (see [Limitations](#limitations)). With two-way audio on, you can turn this off and answer from the camera instead. |
+| Two-way audio | Off | Lets you hear and talk to the person at the door from the camera. See [Two-way audio](#two-way-audio). |
+| First RTP Port / Last RTP Port | 5004 / 5013 | The ports used for the sound of calls, one per call at the same time. Only change them if they clash with something else. The SG-150 must be able to reach them, so allow them in your firewall if you have one. |
+
+## Camera
+
+Each video stream of the SG-150 becomes a camera in Home Assistant. In most setups it belongs to the TC phone you create for Home Assistant (see [below](#create-a-tc-phone-connected-to-the-sip-gateway)). The camera shows **Streaming** while there is a call with its device, and **Idle** otherwise.
+
+Without two-way audio, the camera shows the picture only. With two-way audio on, its live view also plays the sound from the door station and has a talk button.
+
+## Buttons
+
+| Button | Where | What it does |
+|---|---|---|
+| Lightswitch | The gateway | Triggers the light switch of your In-Home system. |
+| Door Opener | Each door station | Opens the door. |
+| Hang Up | Next to each camera | Ends the call shown by that camera. If there is no call, Home Assistant shows an error. |
+
+## Two-way audio
+
+With **Two-way audio** turned on, you can hear the door station and talk back from the camera's live view, like on an indoor station. This, as of writing, needs Home Assistant 2026.11 or later, and the following configuration:
+
+1. Turn on the Labs feature under **Settings → System → Labs → Two-way audio**. Two-way audio is a preview feature, and Home Assistant only shows the talk button once it is turned on there.
+2. Open Home Assistant over HTTPS. Browsers only let a page use your microphone on a secure connection.
+3. Turn on **Two-way audio** in this integration's options.
+
+The camera's live view then shows a talk button.  
+
+What happens when someone rings depends on the integration's **SIP Auto Answer** option:
+
+- **On:** Home Assistant answers straight away, as before. You hear the door station when you open the live view, and pressing talk lets them hear you.
+- **Off:** Home Assistant rings along with your indoor stations. Pressing talk answers the call. If someone answers on an indoor station first, or nobody answers within a minute, Home Assistant leaves the call to them.
+
+The call ends when you close the live view you talked from, or when you press **Hang Up**. Just watching the live view never ends a call, except when the door station hangs up.
 
 ## Configure the SG-150 to connect to the SIP-Gateway
 
