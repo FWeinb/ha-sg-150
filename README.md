@@ -1,4 +1,11 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/header-dark.svg">
+  <img src="docs/header-light.svg" alt="SG-150 for Home Assistant: a door station, an indoor station, the gateway and Home Assistant on one In-Home bus" width="100%">
+</picture>
+
 # Siedle Gateway 150 Integration
+
+[![HACS Default](https://img.shields.io/badge/HACS-Default-41BDF5.svg)](https://github.com/hacs/integration)
 
 This Home Assistant custom integration allowing integration with Siedle Gateway 150 (SG-150) via a local connection. It is developed to integrate a Siedle Door Camera with Home Assistant.
 
@@ -13,13 +20,7 @@ Currently the integration exposes:
 - A bell that rings when the door station calls Home Assistant
 - A Hang Up button next to each camera
 - A media source with the pictures the gateway stored during calls, per PBX phone (Media → Siedle Gateway)
-- Actions to control the SG-150:
-  - start_call: Start a phone call within the In-Home system
-  - stop_call: Stop a phone call within the In-Home system
-  - send_sip_info_dtmf: Sends a DTMF signal to the Siedle Gateway during an In-Home phone call
-  - get_active_calls: Returns a list of active call IDs (`active_calls`) and, in `calls`, each call's direction and the caller/callee device (`id`, `name`) when known.
-  - play_audio: Play a media_source_id to an active call (Supporting wav/mp3, see [Tips & Tricks](#tips--tricks))
-  - Every action takes an optional `config_entry_id` to pick the gateway; it can be omitted when only one gateway is set up.
+- Actions to start and control calls (see [Actions](#actions))
 
 # Disclaimer
 
@@ -67,6 +68,20 @@ Without two-way audio, the camera shows the picture only. With two-way audio on,
 | Lightswitch | The gateway | Triggers the light switch of your In-Home system. |
 | Door Opener | Each door station | Opens the door. |
 | Hang Up | Next to each camera | Ends the call shown by that camera. If there is no call, Home Assistant shows an error. |
+
+## Actions
+
+These actions let automations and scripts start and control calls. Every action also takes an optional `config_entry_id` to pick the gateway; leave it out when only one gateway is set up.
+
+| Action | What it does | Fields | Response |
+|---|---|---|---|
+| `sg_150.start_call` | Starts a call within the In-Home system, for example to a door station. | `to`: the number to call, including its prefix, without spaces | `call_id` of the new call |
+| `sg_150.stop_call` | Ends a call. | `call_id` | `success` |
+| `sg_150.send_sip_info_dtmf` | Sends a DTMF signal during a call, for example to trigger a function of the door station (see [Tips & Tricks](#tips--tricks)). | `call_id`, `signal` (0–9, `*` or `#`), `duration` in milliseconds (optional, default 100) | `success` |
+| `sg_150.play_audio` | Plays a sound into a call, such as a text-to-speech message. Supports wav and mp3 (see [Tips & Tricks](#tips--tricks)). | `call_id`, `media_source_id` | `success` |
+| `sg_150.get_active_calls` | Lists the calls in progress. | none | `active_calls`: the call IDs; `calls`: each call's direction and the devices on either end (`id`, `name`), when known |
+
+If an action fails, its response contains an `error` with the reason.
 
 ## Two-way audio
 
