@@ -13,8 +13,10 @@
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/fweinb/ha-sg-150/issues",
   "requirements": [
+    "aiortc>=1.16.0",
     "soundfile==0.13.1",
-    "numpy>=2.3.2"
+    "numpy>=2.3.2",
+    "pydantic>=2.0"
   ],
   "version": "0.1.0"
 }

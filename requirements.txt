@@ -1,5 +1,10 @@
 colorlog==6.12.0
-homeassistant==2026.7.0
+homeassistant==2026.11.0b0
+# Home Assistant constrains pydantic to this version but doesn't install it.
+pydantic==2.14.1
+# aiortc main relaxed its PyAV pin to av<20 (HA pins av==19.0.0); replace this
+# with the release named in manifest.json once it is on PyPI.
+aiortc @ https://github.com/aiortc/aiortc/archive/34b5fd3409220e1aeb8b62f2c56a9ae2085ca8c8.zip
 pip>=26.2.2
 ruff==0.17.2
 soundfile==0.14.0

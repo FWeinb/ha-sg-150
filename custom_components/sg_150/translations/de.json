@@ -24,7 +24,10 @@
                     "sip-password": "SIP Passwort",
                     "sip-port": "SIP Port",
                     "sip-number": "SIP Nummer",
-                    "sip-auto-answer": "SIP Automatisch Antworten"
+                    "sip-auto-answer": "SIP Automatisch Antworten",
+                    "two-way-audio": "Gegensprechen",
+                    "rtp-port-min": "Erster RTP Port",
+                    "rtp-port-max": "Letzter RTP Port"
                 },
                 "data_description": {
                     "sip-caller-ip": "IP Addresse welche als SIP Caller genutzt wird.",
@@ -32,7 +35,10 @@
                     "sip-password": "Password für die Anmeldung durch das Siedle Gateways",
                     "sip-port": "Port für die Anmeldung durch das Siedle Gateways",
                     "sip-number": "Telefonnummer für das im Siedle Gateway Konfigurierte TK-Telefon",
-                    "sip-auto-answer": "Automatische Annahme von SIP-Anrufen"
+                    "sip-auto-answer": "Eingehende SIP Anrufe automatisch annehmen. Ist Gegensprechen aktiv und dies aus, klingelt Home Assistant mit und nimmt das Gespärch an, sobald in der Live-Ansicht der Kamera gesprochen wird.",
+                    "two-way-audio": "Über WebRTC aus der Live-Ansicht der Kamera mit der Türstation sprechen. Benötigt aktuell die Labs-Funktion Zwei-Wege-Audio und Home Assistant über HTTPS.",
+                    "rtp-port-min": "Erster UDP Port für das Gesprächsaudio. Das Siedle Gateway muss die Ports vom ersten bis zum letzten erreichen können, einen pro gleichzeitigem Anruf.",
+                    "rtp-port-max": "Letzter UDP Port für das Gesprächsaudio"
                 }
             },
             "reauth_confirm": {
@@ -51,11 +57,12 @@
         "error": {
             "auth": "Benutzername/Passwort falsch.",
             "connection": "Die Verbindung zum Server konnte nicht hergestellt werden.",
-            "unknown": "[%key:common::config_flow::error::unknown%]"
+            "unknown": "Unerwarteter Fehler",
+            "rtp_ports": "Die RTP Ports müssen Zahlen zwischen 1024 und 65535 sein, und der erste darf nicht über dem letzten liegen."
         },
         "abort": {
-            "already_configured": "[%key:common::config_flow::abort::already_configured_account%]",
-            "reauth_successful": "[%key:common::config_flow::abort::reauth_successful%]"
+            "already_configured": "Konto ist bereits konfiguriert",
+            "reauth_successful": "Die erneute Authentifizierung war erfolgreich"
         }
     },
     "options": {
@@ -68,16 +75,27 @@
                     "sip-user": "SIP Username",
                     "sip-password": "SIP Passwort",
                     "sip-port": "SIP Port",
-                    "sip-number": "SIP Number"
+                    "sip-number": "SIP Number",
+                    "sip-auto-answer": "SIP Automatisch Antworten",
+                    "two-way-audio": "Gegensprechen",
+                    "rtp-port-min": "Erster RTP Port",
+                    "rtp-port-max": "Letzter RTP Port"
                 },
                 "data_description": {
                     "sip-caller-ip": "IP Addresse welche als SIP Caller genutzt wird.",
                     "sip-user": "Benutzername für die Anmeldung durch das Siedle Gateways",
                     "sip-password": "Password für die Anmeldung durch das Siedle Gateways",
                     "sip-port": "Port für die Anmeldung durch das Siedle Gateways",
-                    "sip-number": "Telefonnummer für das im Siedle Gateway Konfigurierte TK-Telefon"
+                    "sip-number": "Telefonnummer für das im Siedle Gateway Konfigurierte TK-Telefon",
+                    "sip-auto-answer": "Eingehende SIP Anrufe automatisch annehmen. Ist Gegensprechen aktiv und dies aus, klingelt Home Assistant mit und nimmt an, sobald in der Live-Ansicht der Kamera gesprochen wird.",
+                    "two-way-audio": "Über WebRTC aus der Live-Ansicht der Kamera mit der Türstation sprechen. Benötigt die Labs-Funktion Zwei-Wege-Audio und Home Assistant über HTTPS.",
+                    "rtp-port-min": "Erster UDP Port für das Gesprächsaudio. Das Siedle Gateway muss die Ports vom ersten bis zum letzten erreichen können, einen pro gleichzeitigem Anruf.",
+                    "rtp-port-max": "Letzter UDP Port für das Gesprächsaudio"
                 }
             }
+        },
+        "error": {
+            "rtp_ports": "Die RTP Ports müssen Zahlen zwischen 1024 und 65535 sein, und der erste darf nicht über dem letzten liegen."
         }
     },
     "entity": {
@@ -105,6 +123,9 @@
             },
             "light_switch": {
                 "name": "Lichtschalter"
+            },
+            "hang_up": {
+                "name": "Auflegen"
             }
         },
         "sensor": {
@@ -209,6 +230,11 @@
                     "description": "Das zu verwendende SG-150 Gateway. Kann weggelassen werden, wenn nur ein Gateway eingerichtet ist."
                 }
             }
+        }
+    },
+    "exceptions": {
+        "no_call_to_hang_up": {
+            "message": "Es gibt keinen Anruf zum Auflegen"
         }
     }
 }

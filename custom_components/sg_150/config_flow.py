@@ -23,15 +23,23 @@ from .api import (
 from .const import (
     API_PORT,
     CONF_HOST_ADDRESS,
+    CONF_RTP_PORT_MAX,
+    CONF_RTP_PORT_MIN,
     CONF_SIP_AUTO_ANSWER,
     CONF_SIP_CALLER_IP,
     CONF_SIP_NUMBER,
     CONF_SIP_PASSWORD,
     CONF_SIP_PORT,
     CONF_SIP_USER,
+    CONF_TWO_WAY_AUDIO,
+    DEFAULT_RTP_PORT_MAX,
+    DEFAULT_RTP_PORT_MIN,
     DOMAIN,
     LOGGER,
 )
+
+MIN_RTP_PORT = 1024
+MAX_RTP_PORT = 65535
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -88,7 +96,8 @@ class SG150FlowHandler(config_entries.ConfigFlow, domain=DOMAIN):  # pylint: dis
         self, user_options: dict[str, any] | None = None
     ) -> config_entries.FlowResult:
         """Configure user optons."""
-        if user_options:
+        errors = validate_options(user_options) if user_options else {}
+        if user_options and not errors:
             return self.async_create_entry(
                 title=self._data[CONF_HOST_ADDRESS].lower(),
                 data=self._data,
@@ -98,6 +107,7 @@ class SG150FlowHandler(config_entries.ConfigFlow, domain=DOMAIN):  # pylint: dis
         return self.async_show_form(
             step_id="user_options",
             data_schema=vol.Schema(await get_options_schema(user_options)),
+            errors=errors,
         )
 
     async def get_user_config_schema(self, entry: dict | None = None) -> dict:
@@ -209,8 +219,9 @@ class SG150OptionsFlowHandler(config_entries.OptionsFlowWithReload):
     ) -> config_entries.FlowResult:
         """Configure options."""
         existing_options = self.config_entry.options.copy()
+        errors = validate_options(user_input) if user_input else {}
 
-        if user_input:
+        if user_input and not errors:
             return self.async_create_entry(title="", data=existing_options | user_input)
 
         return self.async_show_form(
@@ -218,7 +229,20 @@ class SG150OptionsFlowHandler(config_entries.OptionsFlowWithReload):
             data_schema=vol.Schema(
                 await get_options_schema(user_input or self.config_entry.options)
             ),
+            errors=errors,
         )
+
+
+def validate_options(options: Mapping[str, Any]) -> dict[str, str]:
+    """Return form errors for the options, if any."""
+    try:
+        low = int(options.get(CONF_RTP_PORT_MIN, DEFAULT_RTP_PORT_MIN))
+        high = int(options.get(CONF_RTP_PORT_MAX, DEFAULT_RTP_PORT_MAX))
+    except ValueError:
+        return {"base": "rtp_ports"}
+    if not MIN_RTP_PORT <= low <= high <= MAX_RTP_PORT:
+        return {"base": "rtp_ports"}
+    return {}
 
 
 async def get_options_schema(entry: dict | None = None) -> dict:
@@ -260,4 +284,19 @@ async def get_options_schema(entry: dict | None = None) -> dict:
         vol.Optional(
             CONF_SIP_AUTO_ANSWER, default=(entry or {}).get(CONF_SIP_AUTO_ANSWER, True)
         ): selector.BooleanSelector(),
+        vol.Optional(
+            CONF_TWO_WAY_AUDIO, default=(entry or {}).get(CONF_TWO_WAY_AUDIO, False)
+        ): selector.BooleanSelector(),
+        vol.Optional(
+            CONF_RTP_PORT_MIN,
+            default=str((entry or {}).get(CONF_RTP_PORT_MIN, DEFAULT_RTP_PORT_MIN)),
+        ): selector.TextSelector(
+            selector.TextSelectorConfig(type=selector.TextSelectorType.NUMBER),
+        ),
+        vol.Optional(
+            CONF_RTP_PORT_MAX,
+            default=str((entry or {}).get(CONF_RTP_PORT_MAX, DEFAULT_RTP_PORT_MAX)),
+        ): selector.TextSelector(
+            selector.TextSelectorConfig(type=selector.TextSelectorType.NUMBER),
+        ),
     }

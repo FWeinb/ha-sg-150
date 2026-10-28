@@ -40,8 +40,12 @@ IMAGE_MIME_TYPE = "image/jpeg"
 
 
 async def async_get_media_source(hass: HomeAssistant) -> MediaSource:
-    """Set up the SG-150 media source."""
-    hass.http.register_view(SG150ImageView(hass))
+    """
+    Set up the SG-150 media source.
+
+    The image view is registered in async_setup instead: media_source loads
+    this platform lazily, so image URLs would 404 until media was browsed.
+    """
     return SG150MediaSource(hass)
 
 

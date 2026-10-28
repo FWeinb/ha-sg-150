@@ -18,17 +18,23 @@ from .api import SG150ApiClient
 from .const import (
     API_PORT,
     CONF_HOST_ADDRESS,
+    CONF_RTP_PORT_MAX,
+    CONF_RTP_PORT_MIN,
     CONF_SIP_AUTO_ANSWER,
     CONF_SIP_CALLER_IP,
     CONF_SIP_NUMBER,
     CONF_SIP_PASSWORD,
     CONF_SIP_PORT,
     CONF_SIP_USER,
+    CONF_TWO_WAY_AUDIO,
+    DEFAULT_RTP_PORT_MAX,
+    DEFAULT_RTP_PORT_MIN,
     DOMAIN,
 )
 from .coordinator import SG150Coordinator
 from .data import SG150RuntimeData
 from .line import GatewayLine
+from .media_source import SG150ImageView
 from .services import async_setup_services
 from .sip.minisip import MiniSIPServer
 
@@ -50,8 +56,9 @@ PLATFORMS: list[Platform] = [
 
 
 async def async_setup(hass: HomeAssistant, _: ConfigType) -> bool:
-    """Register the services once per Home Assistant instance."""
+    """Register the services and the image view once per Home Assistant instance."""
     async_setup_services(hass)
+    hass.http.register_view(SG150ImageView(hass))
     return True
 
 
@@ -76,6 +83,10 @@ async def async_setup_entry(
         call_host=entry.options.get(CONF_SIP_CALLER_IP),
         users=users,
         port=int(entry.options.get(CONF_SIP_PORT)),
+        rtp_ports=range(
+            int(entry.options.get(CONF_RTP_PORT_MIN, DEFAULT_RTP_PORT_MIN)),
+            int(entry.options.get(CONF_RTP_PORT_MAX, DEFAULT_RTP_PORT_MAX)) + 1,
+        ),
     )
 
     line = GatewayLine(
@@ -84,6 +95,8 @@ async def async_setup_entry(
         number=entry.options.get(CONF_SIP_NUMBER),
         auto_answer=entry.options.get(CONF_SIP_AUTO_ANSWER, True),
         devices=lambda: coordinator.data.devices if coordinator.data else [],
+        # Without auto answer, ring along so the camera's talk button can answer.
+        ring_along=entry.options.get(CONF_TWO_WAY_AUDIO, False),
     )
 
     entry.runtime_data = SG150RuntimeData(

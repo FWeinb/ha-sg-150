@@ -8,7 +8,7 @@ import re
 from typing import TYPE_CHECKING
 
 import pytest
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant.common import MockConfigEntry
 
 from custom_components.sg_150.const import API_PORT, CONF_HOST_ADDRESS, DOMAIN
 from tests.conftest import MACHINE_INFO, TOKEN
@@ -25,7 +25,7 @@ from tests.utils import FIXTURES
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant, ServiceResponse
-    from pytest_homeassistant_custom_component.test_util.aiohttp import (
+    from pytest_homeassistant.test_util.aiohttp import (
         AiohttpClientMocker,
     )
 

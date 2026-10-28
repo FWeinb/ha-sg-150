@@ -11,20 +11,23 @@ from homeassistant.data_entry_flow import FlowResultType
 from custom_components.sg_150.api import SG150ApiClient
 from custom_components.sg_150.const import (
     CONF_HOST_ADDRESS,
+    CONF_RTP_PORT_MAX,
+    CONF_RTP_PORT_MIN,
     CONF_SIP_AUTO_ANSWER,
     CONF_SIP_CALLER_IP,
     CONF_SIP_NUMBER,
     CONF_SIP_PASSWORD,
     CONF_SIP_PORT,
     CONF_SIP_USER,
+    CONF_TWO_WAY_AUDIO,
     DOMAIN,
 )
 from tests.conftest import API_URL, HOST, TOKEN
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
-    from pytest_homeassistant_custom_component.common import MockConfigEntry
-    from pytest_homeassistant_custom_component.test_util.aiohttp import (
+    from pytest_homeassistant.common import MockConfigEntry
+    from pytest_homeassistant.test_util.aiohttp import (
         AiohttpClientMocker,
     )
 
@@ -71,7 +74,12 @@ async def test_user_flow_creates_entry(
         "username": "admin",
         "password": SG150ApiClient.hash_password("pw"),
     }
-    assert result["options"] == OPTIONS
+    assert result["options"] == {
+        **OPTIONS,
+        CONF_RTP_PORT_MIN: "5004",
+        CONF_RTP_PORT_MAX: "5013",
+        CONF_TWO_WAY_AUDIO: False,
+    }
 
 
 @pytest.mark.parametrize(
@@ -130,6 +138,24 @@ async def test_options_flow_updates_options(
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert config_entry.options[CONF_SIP_NUMBER] == "*2621"
     assert len(sip_servers) == 2
+
+
+async def test_options_flow_rejects_a_bad_rtp_port_range(
+    hass: HomeAssistant,
+    config_entry: MockConfigEntry,
+    setup_integration: MiniSIPServer,
+) -> None:
+    """A reversed RTP port range is shown as an error and not stored."""
+    result = await hass.config_entries.options.async_init(config_entry.entry_id)
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {**config_entry.options, CONF_RTP_PORT_MIN: "6000", CONF_RTP_PORT_MAX: "5000"},
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "rtp_ports"}
+    assert CONF_RTP_PORT_MIN not in config_entry.options
 
 
 async def test_reauth_updates_credentials_and_reloads(
