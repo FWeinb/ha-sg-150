@@ -19,11 +19,11 @@ from tests.utils import FIXTURES
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
-    from pytest_homeassistant_custom_component.common import MockConfigEntry
-    from pytest_homeassistant_custom_component.test_util.aiohttp import (
+    from pytest_homeassistant.common import MockConfigEntry
+    from pytest_homeassistant.test_util.aiohttp import (
         AiohttpClientMocker,
     )
-    from pytest_homeassistant_custom_component.typing import ClientSessionGenerator
+    from pytest_homeassistant.typing import ClientSessionGenerator
 
 RESPONSE = json.loads((FIXTURES / "image_store_images.json").read_text())
 IMAGES = RESPONSE["images"]

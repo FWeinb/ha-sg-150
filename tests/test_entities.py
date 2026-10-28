@@ -14,7 +14,7 @@ from tests.sip_messages import GATEWAY, HA_NUMBER, ack, bye, invite, register
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
-    from pytest_homeassistant_custom_component.test_util.aiohttp import (
+    from pytest_homeassistant.test_util.aiohttp import (
         AiohttpClientMocker,
     )
 

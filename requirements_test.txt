@@ -1,2 +1,6 @@
 -r requirements.txt
-pytest-homeassistant-custom-component==0.13.344
+# Home Assistant's own test package, released with Home Assistant itself. Until
+# its 2026.11 release is on PyPI, install it from the core release tag.
+pytest-home-assistant @ https://github.com/home-assistant/core/archive/refs/tags/2026.11.0b0.zip#subdirectory=packages/pytest-home-assistant
+# Coverage for scripts/test; pytest-home-assistant doesn't bring it.
+pytest-cov==7.1.0
