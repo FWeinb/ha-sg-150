@@ -2,7 +2,7 @@
   "name": "fweinb/ha-sg-150",
   "image": "mcr.microsoft.com/devcontainers/python:3.14-trixie",
   "postCreateCommand": "scripts/setup",
-  "appPort": ["8123", "50600:50600/udp"],
+  "appPort": ["8123", "50600:50600/udp", "5004-5013:5004-5013/udp"],
   "portsAttributes": {
     "8123": {
       "label": "Home Assistant",
@@ -11,6 +11,10 @@
     "50600": {
       "label": "SG-150 SIP Port",
       "onAutoForward": "notify"
+    },
+    "5004-5013": {
+      "label": "SG-150 RTP Ports",
+      "onAutoForward": "silent"
     }
   },
   "customizations": {

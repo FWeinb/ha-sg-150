@@ -14,6 +14,7 @@ from custom_components.sg_150.line import (
     IncomingCall,
     LineEvent,
     NotRegisteredError,
+    NotRingingError,
     Registered,
     match_device,
 )
@@ -26,11 +27,12 @@ from tests.sip_messages import (
     SIP_USER,
     ack,
     bye,
+    cancel,
     invite,
     register,
     sip,
 )
-from tests.utils import FakeTransport, load_devices
+from tests.utils import FakeTransport, fake_rtp_endpoint, load_devices
 
 
 class GatewayLineTests(unittest.IsolatedAsyncioTestCase):
@@ -40,20 +42,24 @@ class GatewayLineTests(unittest.IsolatedAsyncioTestCase):
         """Create a server, a line and an event recorder."""
         self.devices = load_devices()
         self.server = MiniSIPServer(
-            {SIP_USER: SIP_PASSWORD}, host=HA_HOST, call_host=HA_HOST
+            {SIP_USER: SIP_PASSWORD},
+            host=HA_HOST,
+            call_host=HA_HOST,
+            rtp_endpoint=fake_rtp_endpoint,
         )
         self.transport = FakeTransport()
         self.server.transport = self.transport
         self.events: list[LineEvent] = []
         self.line = self._line(auto_answer=True)
 
-    def _line(self, *, auto_answer: bool) -> GatewayLine:
+    def _line(self, *, auto_answer: bool, **kwargs: object) -> GatewayLine:
         line = GatewayLine(
             self.server,
             user=SIP_USER,
             number=HA_NUMBER,
             auto_answer=auto_answer,
             devices=self.devices.values,
+            **kwargs,
         )
         line.subscribe(self.events.append)
         return line
@@ -118,6 +124,85 @@ class GatewayLineTests(unittest.IsolatedAsyncioTestCase):
         assert not self.events[0].answered
         assert self._sent_status_lines() == ["SIP/2.0 486 Busy Here"]
         assert not self.line.calls
+
+    def _ring_along_line(self, ring_timeout: float = 60) -> GatewayLine:
+        self.server.on_incoming_call.clear()
+        self.events.clear()
+        return self._line(auto_answer=False, ring_along=True, ring_timeout=ring_timeout)
+
+    async def test_ring_along_call_rings_until_answered(self) -> None:
+        """Without auto answer, ring-along keeps the call ringing for answer()."""
+        self.line = self._ring_along_line()
+
+        await self._receive(invite("call-5", "*111", HA_NUMBER))
+
+        assert self._sent_status_lines() == ["SIP/2.0 180 Ringing"]
+        incoming = self.events[0]
+        assert isinstance(incoming, IncomingCall)
+        assert not incoming.answered
+        assert self.line.ringing["call-5"].involves("door-front")
+
+        await self.line.answer("call-5")
+        await self._receive(ack("call-5"))
+
+        assert self._sent_status_lines()[-1] == "SIP/2.0 200 OK"
+        assert not self.line.ringing
+        assert isinstance(self.events[-1], CallStarted)
+        assert self.line.calls["call-5"].rtp_session().codec == "PCMA"
+
+    async def test_cancelled_ringing_call_cannot_be_answered(self) -> None:
+        """A handset answering first (CANCEL) ends the ringing call."""
+        self.line = self._ring_along_line()
+        await self._receive(invite("call-6", "*111", HA_NUMBER))
+
+        await self._receive(cancel("call-6"))
+
+        assert not self.line.ringing
+        with pytest.raises(NotRingingError):
+            await self.line.answer("call-6")
+
+    async def test_unanswered_ringing_call_is_rejected_after_the_timeout(self) -> None:
+        """Nobody answering ends the call with 486 Busy Here."""
+        self.line = self._ring_along_line(ring_timeout=0.01)
+        await self._receive(invite("call-7", "*111", HA_NUMBER))
+
+        await asyncio.sleep(0.05)
+
+        assert self._sent_status_lines()[-1] == "SIP/2.0 486 Busy Here"
+        assert not self.line.ringing
+
+    async def test_stop_cancels_ring_timers(self) -> None:
+        """Stopping the line forgets ringing calls without rejecting them."""
+        self.line = self._ring_along_line(ring_timeout=0.01)
+        await self._receive(invite("call-8", "*111", HA_NUMBER))
+
+        await self.line.stop()
+        await asyncio.sleep(0.05)
+
+        assert self._sent_status_lines() == ["SIP/2.0 180 Ringing"]
+        assert not self.line.ringing
+
+    async def test_outgoing_offer_is_sendrecv_with_both_codecs(self) -> None:
+        """We offer PCMA and PCMU, sendrecv, on the call's RTP port."""
+        task = await self._answer_outgoing("SIP/2.0 200 OK")
+        await task
+
+        offer = next(
+            data.decode()
+            for data, _ in self.transport.sent
+            if data.startswith(b"INVITE ")
+        )
+        assert "m=audio 5004 RTP/AVP 8 0\r\n" in offer
+        assert "a=sendrecv" in offer
+        assert "sendonly" not in offer
+
+    async def test_failed_outgoing_call_frees_its_rtp_port(self) -> None:
+        """A busy outgoing call closes its RTP session."""
+        task = await self._answer_outgoing("SIP/2.0 486 Busy Here")
+        with pytest.raises(CallFailedError):
+            await task
+
+        assert not self.server.rtp_sessions
 
     async def test_call_requires_registration(self) -> None:
         """Calling before the gateway registered raises NotRegisteredError."""

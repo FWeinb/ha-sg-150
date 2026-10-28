@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 from homeassistant.const import STATE_OFF, STATE_ON, STATE_UNKNOWN
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import entity_registry as er
 
 from custom_components.sg_150.const import DOMAIN
@@ -17,6 +18,7 @@ if TYPE_CHECKING:
     from pytest_homeassistant.test_util.aiohttp import (
         AiohttpClientMocker,
     )
+    from pytest_homeassistant.typing import WebSocketGenerator
 
     from custom_components.sg_150.sip.minisip import MiniSIPServer
 
@@ -31,6 +33,7 @@ ENTITIES = [
     ("sensor", "door-frontPhone Number", "Front Door Phone Number"),
     ("camera", "door-frontCamera", "Front Door Camera"),
     ("button", "door-backDoor Opener", "Back Door Door Opener"),
+    ("button", "door-front_hang_up", "Front Door Hang Up"),
     ("event", "pbx-externalBell", "Home Assistant Bell"),
     ("sensor", "pbx-externalPhone Number", "Home Assistant Phone Number"),
     ("sensor", "pbx-internal-phonePhone Number", "Kitchen Phone Phone Number"),
@@ -88,6 +91,53 @@ async def test_door_opener_sends_dialable_call_number(
     ]
 
 
+@pytest.mark.usefixtures("setup_integration")
+async def test_hang_up_sits_next_to_each_camera(hass: HomeAssistant) -> None:
+    """Hang Up is on the device with the camera, not on every door station."""
+    registry = er.async_get(hass)
+    camera = registry.async_get(entity_id(hass, "camera", "door-frontCamera"))
+    hang_up = registry.async_get(entity_id(hass, "button", "door-front_hang_up"))
+
+    assert hang_up.device_id == camera.device_id
+    # The back door has a door opener, but only snapshots: no camera, no Hang Up.
+    assert registry.async_get_entity_id("button", DOMAIN, "door-back_hang_up") is None
+
+
+async def test_hang_up_ends_only_its_devices_calls(
+    hass: HomeAssistant, setup_integration: MiniSIPServer
+) -> None:
+    """Pressing Hang Up sends BYE for calls with its device, and leaves others."""
+    await setup_integration.handle_datagram(invite("c5", "*111", HA_NUMBER), GATEWAY)
+    await setup_integration.handle_datagram(ack("c5"), GATEWAY)
+    await setup_integration.handle_datagram(invite("c6", "*999", "*9999"), GATEWAY)
+    await setup_integration.handle_datagram(ack("c6"), GATEWAY)
+
+    await hass.services.async_call(
+        "button",
+        "press",
+        {"entity_id": entity_id(hass, "button", "door-front_hang_up")},
+        blocking=True,
+    )
+
+    assert list(setup_integration.active_calls) == ["c6"]
+    assert setup_integration.transport.sent[-1][0].startswith(b"BYE ")
+
+
+@pytest.mark.usefixtures("setup_integration")
+async def test_hang_up_without_a_call_is_refused(hass: HomeAssistant) -> None:
+    """Pressing Hang Up with no call shows an error instead of doing nothing."""
+    with pytest.raises(ServiceValidationError) as err:
+        await hass.services.async_call(
+            "button",
+            "press",
+            {"entity_id": entity_id(hass, "button", "door-front_hang_up")},
+            blocking=True,
+        )
+
+    assert err.value.translation_key == "no_call_to_hang_up"
+    assert str(err.value) == "There is no call to hang up"
+
+
 async def test_sip_connection_follows_registration(
     hass: HomeAssistant, setup_integration: MiniSIPServer
 ) -> None:
@@ -140,3 +190,21 @@ async def test_camera_streams_during_a_call_with_its_door(
     await setup_integration.handle_datagram(bye("c3"), GATEWAY)
     await hass.async_block_till_done()
     assert hass.states.get(camera).state == "idle"
+
+
+async def test_camera_without_two_way_audio_stays_mjpeg(
+    hass: HomeAssistant,
+    setup_integration: MiniSIPServer,
+    hass_ws_client: WebSocketGenerator,
+) -> None:
+    """With the option off, the camera offers no stream types (MJPEG only)."""
+    client = await hass_ws_client()
+    await client.send_json_auto_id(
+        {
+            "type": "camera/capabilities",
+            "entity_id": entity_id(hass, "camera", "door-frontCamera"),
+        }
+    )
+    response = await client.receive_json()
+
+    assert response["result"] == {"frontend_stream_types": [], "two_way_audio": False}

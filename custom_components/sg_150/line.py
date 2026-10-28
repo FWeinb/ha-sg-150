@@ -8,17 +8,22 @@ calls are answered, and which SG150Device is on either end of a call.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 from .const import LOGGER
-from .sip.minisip import sip_user
+from .sip.minisip import IncomingCallDecision, sip_user
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping
 
     from .sip.minisip import CallContext, MiniSIPServer, SIPDialog, SIPRegistration
+    from .sip.rtp import RtpSession
     from .types import SG150Device
+
+# A ringing call nobody answers is rejected as busy after this many seconds.
+RING_TIMEOUT = 60
 
 type Direction = Literal["incoming", "outgoing"]
 
@@ -33,6 +38,10 @@ class NotRegisteredError(LineError):
 
 class CallFailedError(LineError):
     """The gateway did not accept the call."""
+
+
+class NotRingingError(LineError):
+    """The call to answer is not ringing (any more)."""
 
 
 @dataclass(frozen=True, eq=False)
@@ -66,6 +75,10 @@ class Call:
     async def play(self, mime_type: str, audio_data: bytes) -> None:
         """Play audio into the call."""
         await self._server.play_audio(self.id, mime_type, audio_data)
+
+    def rtp_session(self) -> RtpSession:
+        """Return the audio stream of the established call."""
+        return self._server.rtp_session(self.id)
 
 
 @dataclass(frozen=True)
@@ -141,7 +154,7 @@ def match_device(header: str, devices: Iterable[SG150Device]) -> SG150Device | N
 class GatewayLine:
     """The SIP line the Smart Gateway registers on."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         server: MiniSIPServer,
         *,
@@ -149,27 +162,38 @@ class GatewayLine:
         number: str,
         auto_answer: bool,
         devices: Callable[[], Iterable[SG150Device]],
+        ring_along: bool = False,
+        ring_timeout: float = RING_TIMEOUT,
     ) -> None:
         """
         Create a line in front of `server`.
 
         user: the SIP user the gateway registers as.
         number: the number Home Assistant calls from.
-        auto_answer: answer incoming calls (True) or reject them as busy (False).
+        auto_answer: answer incoming calls (True) or not (False).
         devices: returns the current gateway devices, used to match calls.
+        ring_along: without auto answer, let incoming calls ring until answer()
+            is called, instead of rejecting them as busy straight away. Calls
+            nobody answers are rejected as busy after `ring_timeout` seconds.
         """
         self._server = server
         self.user = user
         self._number = number
         self._auto_answer = auto_answer
+        self._ring_along = ring_along
+        self._ring_timeout = ring_timeout
         self._devices = devices
         self._calls: dict[str, Call] = {}
+        self._ringing: dict[str, Call] = {}
+        self._ring_timers: dict[str, asyncio.TimerHandle] = {}
+        self._tasks: set[asyncio.Task] = set()
         self._subscribers: list[Callable[[LineEvent], None]] = []
 
         server.add_listener("on_register", self._on_register)
         server.add_listener("on_incoming_call", self._on_incoming_call)
         server.add_listener("on_call_established", self._on_call_established)
         server.add_listener("on_call_ended", self._on_call_ended)
+        server.add_listener("on_call_cancelled", self._on_call_cancelled)
 
     @property
     def registration(self) -> SIPRegistration | None:
@@ -181,13 +205,47 @@ class GatewayLine:
         """Return the established calls by call id."""
         return self._calls
 
+    @property
+    def ringing(self) -> Mapping[str, Call]:
+        """Return the incoming calls waiting for answer(), by call id."""
+        return self._ringing
+
     async def start(self) -> None:
         """Start listening for SIP traffic."""
         await self._server.start()
 
     async def stop(self) -> None:
         """Stop listening for SIP traffic."""
+        for call_id in list(self._ringing):
+            self._stop_ringing(call_id)
         await self._server.stop()
+
+    async def answer(self, call_id: str) -> None:
+        """
+        Answer a ringing incoming call.
+
+        Raises NotRingingError if it is not ringing, for example because a
+        handset answered first. The call starts once the gateway ACKs.
+        """
+        if self._stop_ringing(call_id) is None:
+            msg = f"Call {call_id} is not ringing"
+            raise NotRingingError(msg)
+        await self._server.answer_call(call_id)
+
+    def _stop_ringing(self, call_id: str) -> Call | None:
+        if (timer := self._ring_timers.pop(call_id, None)) is not None:
+            timer.cancel()
+        return self._ringing.pop(call_id, None)
+
+    def _on_ring_timeout(self, call_id: str) -> None:
+        task = asyncio.create_task(self._reject_unanswered(call_id))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    async def _reject_unanswered(self, call_id: str) -> None:
+        if self._stop_ringing(call_id) is not None:
+            LOGGER.debug("Nobody answered call %s, rejecting it", call_id)
+            await self._server.reject_call(call_id)
 
     def subscribe(self, callback: Callable[[LineEvent], None]) -> Callable[[], None]:
         """
@@ -275,8 +333,18 @@ class GatewayLine:
             context.called_to,
             context.addr,
         )
+        if self._auto_answer:
+            decision = IncomingCallDecision.ANSWER
+        elif self._ring_along:
+            decision = IncomingCallDecision.RING
+            self._ringing[call.id] = call
+            self._ring_timers[call.id] = asyncio.get_running_loop().call_later(
+                self._ring_timeout, self._on_ring_timeout, call.id
+            )
+        else:
+            decision = IncomingCallDecision.REJECT
         self._emit(IncomingCall(call, answered=self._auto_answer))
-        return self._auto_answer
+        return decision
 
     async def _on_call_established(self, dialog: SIPDialog) -> None:
         call = self._new_call(
@@ -293,3 +361,6 @@ class GatewayLine:
         call = self._calls.pop(dialog.call_id, None)
         if call is not None:
             self._emit(CallEnded(call))
+
+    async def _on_call_cancelled(self, call_id: str) -> None:
+        self._stop_ringing(call_id)

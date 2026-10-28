@@ -21,7 +21,7 @@ from custom_components.sg_150.const import (
     DOMAIN,
 )
 from custom_components.sg_150.sip.minisip import MiniSIPServer
-from tests.utils import FIXTURES, FakeTransport
+from tests.utils import FIXTURES, FakeTransport, fake_rtp_endpoint
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -90,11 +90,12 @@ def gateway_api(aioclient_mock: AiohttpClientMocker) -> AiohttpClientMocker:
 
 @pytest.fixture
 def sip_servers() -> Generator[list[MiniSIPServer]]:
-    """Start SIP servers on a FakeTransport instead of a UDP socket."""
+    """Start SIP servers on fake transports instead of UDP sockets."""
     started: list[MiniSIPServer] = []
 
     async def start(self: MiniSIPServer) -> None:
         self.transport = FakeTransport()
+        self._rtp_endpoint = fake_rtp_endpoint
         started.append(self)
 
     with patch.object(MiniSIPServer, "start", start):
