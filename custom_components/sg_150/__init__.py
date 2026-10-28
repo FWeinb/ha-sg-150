@@ -29,6 +29,7 @@ from .const import (
 from .coordinator import SG150Coordinator
 from .data import SG150RuntimeData
 from .line import GatewayLine
+from .media_source import SG150ImageView
 from .services import async_setup_services
 from .sip.minisip import MiniSIPServer
 
@@ -50,8 +51,9 @@ PLATFORMS: list[Platform] = [
 
 
 async def async_setup(hass: HomeAssistant, _: ConfigType) -> bool:
-    """Register the services once per Home Assistant instance."""
+    """Register the services and the image view once per Home Assistant instance."""
     async_setup_services(hass)
+    hass.http.register_view(SG150ImageView(hass))
     return True
 
 
