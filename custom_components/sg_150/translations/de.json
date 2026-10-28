@@ -51,11 +51,11 @@
         "error": {
             "auth": "Benutzername/Passwort falsch.",
             "connection": "Die Verbindung zum Server konnte nicht hergestellt werden.",
-            "unknown": "[%key:common::config_flow::error::unknown%]"
+            "unknown": "Unerwarteter Fehler"
         },
         "abort": {
-            "already_configured": "[%key:common::config_flow::abort::already_configured_account%]",
-            "reauth_successful": "[%key:common::config_flow::abort::reauth_successful%]"
+            "already_configured": "Konto ist bereits konfiguriert",
+            "reauth_successful": "Die erneute Authentifizierung war erfolgreich"
         }
     },
     "options": {
