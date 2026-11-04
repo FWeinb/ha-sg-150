@@ -44,15 +44,11 @@ class SG150GatewayEntity(CoordinatorEntity[SG150Coordinator]):
     def __init__(self, coordinator: SG150Coordinator, key: str) -> None:
         """Create a gateway entity identified by `key`."""
         super().__init__(coordinator)
-        machine_info = coordinator.machine_info
         self._attr_translation_key = key
-        self._attr_unique_id = gateway_unique_id(machine_info.macAddress, key)
+        self._attr_unique_id = gateway_unique_id(
+            coordinator.machine_info.macAddress, key
+        )
         self._attr_device_info = DeviceInfo(
-            name="Smart Gateway 150",
-            manufacturer=MANUFACTURER,
-            model=machine_info.machineName or "Unknown",
-            hw_version=machine_info.machineRevision or "?",
-            serial_number=machine_info.macAddress or "?",
             identifiers={coordinator.get_gateway_identifier()},
         )
 
@@ -74,7 +70,7 @@ class SG150DeviceEntity(CoordinatorEntity[SG150Coordinator]):
             identifiers={(coordinator.config_entry.domain, device.id)},
             name=device.name,
             manufacturer=MANUFACTURER,
-            via_device=coordinator.get_gateway_identifier(),
+            via_device_id=coordinator.gateway_device_id,
         )
 
     def get_device(self) -> SG150Device:

@@ -13,7 +13,7 @@ from homeassistant.helpers import (
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import SG150ApiClient, SG150ApiClientAuthenticationError, SG150ApiClientError
-from .const import DOMAIN, LOGGER
+from .const import DOMAIN, LOGGER, MANUFACTURER
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -39,6 +39,7 @@ class SG150Coordinator(DataUpdateCoordinator):
 
     config_entry: SG150ConfigEntry
     machine_info: SG150MaschineInfo | None = None
+    gateway_device_id: str | None = None
 
     data: SG150Data
 
@@ -53,8 +54,25 @@ class SG150Coordinator(DataUpdateCoordinator):
         self.previous_devices: set[str] = set()
 
     def get_gateway_identifier(self) -> tuple[str, str]:
-        """Get the gateway identifier to be used within via_device."""
+        """Get the identifier of the gateway device in the device registry."""
         return (self.config_entry.domain, self.config_entry.entry_id)
+
+    async def async_register_gateway_device(self) -> None:
+        """Register the gateway so device entities can link to it via its id."""
+        machine_info = self.machine_info
+        self.gateway_device_id = (
+            dr.async_get(self.hass)
+            .async_get_or_create(
+                config_entry_id=self.config_entry.entry_id,
+                identifiers={self.get_gateway_identifier()},
+                name="Smart Gateway 150",
+                manufacturer=MANUFACTURER,
+                model=machine_info.machineName or "Unknown",
+                hw_version=machine_info.machineRevision or "?",
+                serial_number=machine_info.macAddress or "?",
+            )
+            .id
+        )
 
     def get_api_client(self) -> SG150ApiClient:
         """Get the API client."""
