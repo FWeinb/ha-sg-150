@@ -9,6 +9,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import dns.rdata
+import dns.rdataclass
+import dns.rdatatype
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -55,6 +58,17 @@ PLATFORMS: list[Platform] = [
 ]
 
 
+# Taken from https://github.com/home-assistant/core/pull/121702/changes
+def load_dnspython_rdata_classes() -> None:
+    """Load dnspython rdata classes used by aioice."""
+    # aioice's mDNS records use class IN with the cache-flush bit set, which
+    # dnspython caches separately from IN and would otherwise import on demand.
+    for rdclass in (dns.rdataclass.IN, dns.rdataclass.IN | 0x8000):
+        for rdtype in dns.rdatatype.RdataType:
+            if not dns.rdatatype.is_metatype(rdtype) or rdtype == dns.rdatatype.OPT:
+                dns.rdata.get_rdata_class(rdclass, rdtype)  # type: ignore[no-untyped-call]
+
+
 async def async_setup(hass: HomeAssistant, _: ConfigType) -> bool:
     """Register the services and the image view once per Home Assistant instance."""
     async_setup_services(hass)
@@ -67,6 +81,9 @@ async def async_setup_entry(
     entry: SG150ConfigEntry,
 ) -> bool:
     """Set up this integration using UI."""
+    # Workaround to avoid blocking imports from dnspython (https://github.com/rthalley/dnspython/issues/1083)
+    await hass.async_add_executor_job(load_dnspython_rdata_classes)
+
     coordinator = SG150Coordinator(hass=hass)
 
     client = SG150ApiClient(
