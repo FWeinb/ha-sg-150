@@ -8,6 +8,7 @@ video transceiver. The SIP side is a MiniSIPServer on fake transports.
 
 import asyncio
 import fractions
+import socket
 import time
 import unittest
 from collections.abc import AsyncIterator
@@ -16,6 +17,7 @@ from unittest.mock import patch
 import av
 import numpy as np
 import pytest
+from aioice import Candidate, Connection
 from aiortc import RTCConfiguration, RTCPeerConnection, RTCSessionDescription
 from aiortc.mediastreams import MediaStreamError, MediaStreamTrack
 from homeassistant.components.camera import WebRTCAnswer, WebRTCMessage
@@ -160,6 +162,38 @@ class OfferTests(unittest.TestCase):
         assert not offer_sends_audio(head + "m=audio 9 RTP 0\r\na=recvonly\r\n")
         assert not offer_sends_audio(head + "m=audio 0 RTP 0\r\na=sendrecv\r\n")
         assert not offer_sends_audio(head + video.replace("recvonly", "sendrecv"))
+
+
+@pytest.mark.usefixtures("socket_enabled")
+class IceCloseTests(unittest.IsolatedAsyncioTestCase):
+    """Closing an ICE connection while its checks still run."""
+
+    async def test_close_while_trickling_drops_stun_retransmissions(self) -> None:
+        """Checks outliving their closed sockets don't crash the event loop."""
+        errors: list[dict] = []
+        asyncio.get_running_loop().set_exception_handler(
+            lambda _, context: errors.append(context)
+        )
+        silent = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.addCleanup(silent.close)
+        silent.bind(("127.0.0.1", 0))
+        with patch("aioice.ice.get_host_addresses", return_value=["127.0.0.1"]):
+            connection = Connection(ice_controlling=True)
+            await connection.gather_candidates()
+        connection.remote_username, connection.remote_password = "abcd", "a" * 22
+        port = silent.getsockname()[1]
+        await connection.add_remote_candidate(
+            Candidate("1", 1, "udp", 100, "127.0.0.1", port, "host")
+        )
+        # No end-of-candidates: the browser is still trickling.
+        connect = asyncio.create_task(connection.connect())
+        await asyncio.sleep(0.1)
+
+        await connection.close()
+        await asyncio.sleep(0.6)  # past the first STUN retransmission
+        connect.cancel()
+
+        assert errors == []
 
 
 # WebRTC needs real sockets for ICE; the Home Assistant test harness blocks them.

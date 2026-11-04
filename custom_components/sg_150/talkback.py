@@ -14,29 +14,42 @@ import asyncio
 import contextlib
 import fractions
 import time
+import warnings
 from collections import deque
 from typing import TYPE_CHECKING
 
 import av
 import numpy as np
-from aiortc import (
-    RTCConfiguration,
-    RTCPeerConnection,
-    RTCRtpSender,
-    RTCSessionDescription,
-)
-from aiortc.mediastreams import MediaStreamError, MediaStreamTrack
-from aiortc.sdp import candidate_from_sdp
 from homeassistant.components.camera import WebRTCAnswer, WebRTCError
 
 from .const import LOGGER
 from .line import CallEnded, CallStarted, NotRingingError
 from .sip.rtp import PTIME, SAMPLE_RATE, SAMPLES_PER_FRAME
 
+# aiortc only uses google-crc32c to checksum SCTP (data channel) packets, and the
+# sessions here carry none but the frontend's unused channel.
+# Suppress just that warning.
+with warnings.catch_warnings():
+    warnings.filterwarnings(
+        "ignore",
+        message=r".*(?:pure[- ]Python implementation|using a python implementation).*",
+        category=RuntimeWarning,
+        module=r"^google_crc32c(?:\..+)?$",
+    )
+    from aiortc import (
+        RTCConfiguration,
+        RTCIceServer,
+        RTCPeerConnection,
+        RTCRtpSender,
+        RTCSessionDescription,
+    )
+    from aiortc.mediastreams import MediaStreamError, MediaStreamTrack
+    from aiortc.sdp import candidate_from_sdp
+
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
 
-    from aiortc import RTCIceServer, RTCRtpCodecCapability
+    from aiortc import RTCRtpCodecCapability
     from homeassistant.components.camera import WebRTCSendMessage
 
     from .line import Call, GatewayLine, LineEvent
