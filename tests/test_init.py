@@ -40,6 +40,11 @@ async def test_setup_creates_gateway_and_devices(
         "pbx-internal-phone",
     }
 
+    gateway = registry.async_get_device_by_identifier(
+        (DOMAIN, config_entry.entry_id), config_entry.entry_id
+    )
+    assert all(d.via_device_id == gateway.id for d in devices if d.id != gateway.id)
+
 
 async def test_unload_stops_sip_and_keeps_services(
     hass: HomeAssistant,

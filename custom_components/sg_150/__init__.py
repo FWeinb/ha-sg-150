@@ -107,6 +107,7 @@ async def async_setup_entry(
     )
 
     await coordinator.async_config_entry_first_refresh()
+    await coordinator.async_register_gateway_device()
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     await line.start()
