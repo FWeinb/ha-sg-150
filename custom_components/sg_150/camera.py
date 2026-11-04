@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import httpx
-from aiortc import RTCIceServer
 from homeassistant.components.camera import (
     Camera,
     CameraEntityCapabilities,
@@ -22,7 +21,7 @@ from homeassistant.helpers.httpx_client import get_async_client
 from .const import CONF_TWO_WAY_AUDIO, LOGGER
 from .entity import SG150DeviceEntity
 from .line import CallEnded, CallStarted
-from .talkback import Talkback
+from .talkback import RTCIceServer, Talkback
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
