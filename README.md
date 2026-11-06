@@ -5,7 +5,7 @@
 
 # Siedle Gateway 150 Integration
 
-[![HACS Default](https://img.shields.io/badge/HACS-Default-41BDF5.svg)](https://github.com/hacs/integration)
+[![Marketplace Default](https://img.shields.io/badge/Marketplace-Default-41BDF5.svg?logo=homeassistantcommunitystore&logoColor=white)](https://www.home-assistant.io/integrations/marketplace/)
 
 This Home Assistant custom integration allowing integration with Siedle Gateway 150 (SG-150) via a local connection. It is developed to integrate a Siedle Door Camera with Home Assistant.
 
@@ -26,6 +26,12 @@ Currently the integration exposes:
 
 ⚠️ This custom component is an independent project and is not affiliated with Siedle. It has been developed for my own needs. Any trademarks or product names mentioned are the property of their respective owners. ⚠️
 
+## Install using Marketplace
+
+[![Open your Home Assistant instance and open a repository in the Marketplace.](https://my.home-assistant.io/badges/marketplace_repository.svg)](https://my.home-assistant.io/redirect/marketplace_repository/?owner=FWeinb&repository=ha-sg-150&category=integration)
+
+Download and Install SG-150 via the [Home Assistant Marketplace](https://www.home-assistant.io/integrations/marketplace/). You can do this easily in one step by clicking the button above and then clicking Install.
+
 # Configuration
 
 > This configuration will require a license for the SG-150 that includes the "Telephony" feature.
@@ -39,6 +45,10 @@ While setting up the integration within Home Assistant you will be asked to prov
 - Host Address (IP Address of the SG-150)
 - Username (in most cases `admin`)
 - Password (the one used for the web interface)
+
+See [Configure the SG-150 to connect to the SIP-Gateway](#configure-the-sg-150-to-connect-to-the-sip-gateway) 
+
+> With Home Assistant 2026.11 or later you can also use the **Two-way audio** feature. See [Two-way audio](#two-way-audio) for more information.
 
 ## Options
 
