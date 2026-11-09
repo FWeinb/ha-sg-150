@@ -3,7 +3,7 @@ homeassistant==2026.11.0
 # Home Assistant constrains pydantic to this version but doesn't install it.
 pydantic==2.14.2
 aiortc>=1.16.0,<2.0.0
-aioice>=0.12.1,<1.0.0
+aioice>=0.13.0,<1.0.0
 pip>=26.3
 ruff==0.17.3
 soundfile==0.14.0
