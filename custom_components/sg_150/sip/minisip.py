@@ -10,12 +10,14 @@ import base64
 import contextlib
 import hashlib
 import io
+import ipaddress
 import logging
 import os
 import random
 import re
+import socket
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Literal
@@ -194,9 +196,19 @@ def normalize_headers(headers: dict[str, str]) -> dict[str, str]:
     return normalized
 
 
-def parse_sip_message(data: bytes) -> (str, dict[str, str]):
+_REQUEST_LINE = re.compile(r"^[A-Z]+ \S+ SIP/2\.0$")
+_STATUS_LINE = re.compile(r"^SIP/2\.0 \d{3}")
+
+# Headers every request must carry; a request without them gets 400.
+REQUIRED_HEADERS = ("Via", "From", "To", "Call-ID", "CSeq")
+
+
+def parse_sip_message(data: bytes) -> tuple[str, dict[str, str]] | None:
     """
     Parse the SIP package and return the decoded values.
+
+    Returns None for anything that is not a SIP request or response, such as
+    CRLF keepalives, so the caller can drop it without a reply.
 
     Returns:
         method: The SIP method (e.g., INVITE, REGISTER, BYE).
@@ -206,6 +218,8 @@ def parse_sip_message(data: bytes) -> (str, dict[str, str]):
     text = data.decode(errors="ignore")
     lines = text.split("\r\n")
     start_line = lines[0]
+    if not (_REQUEST_LINE.match(start_line) or _STATUS_LINE.match(start_line)):
+        return None
     method = start_line.split(" ", 1)[0].upper()
     raw_headers = {}
     body = []
@@ -391,12 +405,16 @@ class MiniSIPServer:
         realm: str = "",
         rtp_ports: range = DEFAULT_RTP_PORTS,
         rtp_endpoint: RtpEndpointFactory = open_udp_endpoint,
+        trusted_hosts: Iterable[str] = (),
     ) -> None:
         """
         Create a new instance of MiniSIPServer.
 
         rtp_ports: the local UDP ports for call audio, one per concurrent call.
         rtp_endpoint: binds an RtpSession to a port; replaced in tests.
+        trusted_hosts: hosts accepted before they registered, such as the
+            gateway after a restart of Home Assistant. Host names are resolved
+            in start().
         """
         self.host = host
         self.call_host = call_host or host
@@ -420,6 +438,13 @@ class MiniSIPServer:
         self._rtp_endpoint = rtp_endpoint
         self.last_cseq = {}
         self.transport = None
+        self.trusted_hosts = tuple(trusted_hosts)
+        self._trusted_ips: set[str] = set()
+        for trusted_host in self.trusted_hosts:
+            with contextlib.suppress(ValueError):
+                self._trusted_ips.add(str(ipaddress.ip_address(trusted_host)))
+        # Datagram handlers in flight, cancelled by stop().
+        self._tasks: set[asyncio.Task] = set()
 
         # Callbacks: lists for multiple listeners
         self.on_register: list[Callable[..., any]] = []
@@ -488,6 +513,37 @@ class MiniSIPServer:
                 await cb(*args, **kwargs)
             except Exception:
                 logger.exception("Error in %s listener", event_name)
+
+    def is_trusted(self, addr: tuple[str, int]) -> bool:
+        """
+        Return whether SIP traffic from `addr` is accepted.
+
+        Only the IP address counts: the gateway may send from another source
+        port than the one it registered from.
+        """
+        ip = addr[0]
+        return ip in self._trusted_ips or any(
+            registration.addr[0] == ip for registration in self.registrations.values()
+        )
+
+    async def _resolve_trusted_hosts(self) -> None:
+        loop = asyncio.get_running_loop()
+        for trusted_host in self.trusted_hosts:
+            try:
+                infos = await loop.getaddrinfo(
+                    trusted_host, None, type=socket.SOCK_DGRAM
+                )
+            except OSError as err:
+                logger.warning("Could not resolve SIP host %s: %s", trusted_host, err)
+                continue
+            self._trusted_ips.update(str(info[4][0]) for info in infos)
+
+    def _send(self, data: bytes, addr: tuple[str, int]) -> None:
+        """Send a datagram, unless the server stopped meanwhile."""
+        if self.transport is None:
+            log_sip_event("SEND_AFTER_STOP", addr=f"{addr}")
+            return
+        self.transport.sendto(data, addr)
 
     def sip_user_from(self, name: str) -> str:
         """Get a sip from address."""
@@ -710,12 +766,12 @@ class MiniSIPServer:
     async def handle_register(self, message: dict[str, str], addr: (str, int)) -> None:
         """Handle the REGISTER method."""
         if not self.check_cseq(message, addr):
-            self.transport.sendto(build_response(400, "Bad Request", message), addr)
+            self._send(build_response(400, "Bad Request", message), addr)
             return
 
         auth_header = message.get("Authorization")
         if not auth_header:
-            self.transport.sendto(self.create_unauthorized_response(message), addr)
+            self._send(self.create_unauthorized_response(message), addr)
             return
 
         auth = self.parse_authorization(auth_header)
@@ -727,7 +783,7 @@ class MiniSIPServer:
                 nonce=auth.get("nonce") if auth else None,
                 opaque=auth.get("opaque") if auth else None,
             )
-            self.transport.sendto(self.create_unauthorized_response(message), addr)
+            self._send(self.create_unauthorized_response(message), addr)
             return
 
         expires = self.parse_expires(message)
@@ -743,7 +799,7 @@ class MiniSIPServer:
         )
         await self._fire_event("on_register", username, registration)
 
-        self.transport.sendto(
+        self._send(
             build_response(
                 200,
                 "OK",
@@ -772,10 +828,17 @@ class MiniSIPServer:
             addr=addr,
         )
 
-        decisions = [_decision(await cb(call_context)) for cb in self.on_incoming_call]
+        try:
+            decisions = [
+                _decision(await cb(call_context)) for cb in self.on_incoming_call
+            ]
+        except Exception:
+            logger.exception("Error in on_incoming_call listener")
+            self._send(build_response(500, "Server Internal Error", message), addr)
+            return
         if IncomingCallDecision.REJECT in decisions:
             resp = build_response(486, "Busy Here", message)
-            self.transport.sendto(resp, addr)
+            self._send(resp, addr)
             log_sip_event("INCOMING_CALL_REJECTED", addr=f"{addr}", call_id=call_id)
             await self._fire_event("on_call_busy", call_id, addr)
             return
@@ -794,7 +857,7 @@ class MiniSIPServer:
         message["To"] = f"{message.get('To')};tag=minisip"
 
         ringing_resp = build_response(180, "Ringing", message)
-        self.transport.sendto(ringing_resp, addr)
+        self._send(ringing_resp, addr)
         await self._fire_event("on_call_ringing", call_id, addr)
         log_sip_event("CALL_RINGING_SENT", addr=f"{addr}", call_id=call_id)
 
@@ -818,9 +881,7 @@ class MiniSIPServer:
         if invite is None:
             _msg = f"There is currently no ringing call with call id: {call_id}"
             raise ValueError(_msg)
-        self.transport.sendto(
-            build_response(486, "Busy Here", invite.message), invite.addr
-        )
+        self._send(build_response(486, "Busy Here", invite.message), invite.addr)
         log_sip_event("INCOMING_CALL_REJECTED", addr=f"{invite.addr}", call_id=call_id)
         await self._fire_event("on_call_busy", call_id, invite.addr)
 
@@ -831,9 +892,7 @@ class MiniSIPServer:
 
         payload_type = media.get("payload_type", PCMA) if media else PCMA
         if payload_type not in CODEC_NAMES:
-            self.transport.sendto(
-                build_response(488, "Not Acceptable Here", message), addr
-            )
+            self._send(build_response(488, "Not Acceptable Here", message), addr)
             log_sip_event("INCOMING_CALL_NO_CODEC", addr=f"{addr}", call_id=call_id)
             await self._fire_event("on_call_failed", call_id, addr, 488)
             return
@@ -847,9 +906,7 @@ class MiniSIPServer:
             call_id, RtpSession(payload_type=payload_type, remote=remote)
         )
         if port is None:
-            self.transport.sendto(
-                build_response(503, "Service Unavailable", message), addr
-            )
+            self._send(build_response(503, "Service Unavailable", message), addr)
             await self._fire_event("on_call_failed", call_id, addr, 503)
             return
 
@@ -865,7 +922,7 @@ class MiniSIPServer:
             ],
             body=sdp,
         )
-        self.transport.sendto(resp, addr)
+        self._send(resp, addr)
 
         # The call is established once the caller ACKs our 200 OK.
         self.pending_acks[call_id] = SIPDialog(
@@ -893,7 +950,7 @@ class MiniSIPServer:
             waited += interval
             if call_id not in self.pending_acks:
                 return
-            self.transport.sendto(response, addr)
+            self._send(response, addr)
             log_sip_event("OK_RESENT", addr=f"{addr}", call_id=call_id)
             interval = min(interval * 2, TIMER_T2)
 
@@ -947,7 +1004,7 @@ class MiniSIPServer:
         """Handle the BYE method."""
         call_id = message.get("Call-ID")
 
-        self.transport.sendto(build_response(200, "OK", message), addr)
+        self._send(build_response(200, "OK", message), addr)
         if self.pending_acks.pop(call_id, None) is not None:
             self._stop_ack_wait(call_id)
             self._close_rtp(call_id)
@@ -964,7 +1021,7 @@ class MiniSIPServer:
         if invite is None:
             # Already answered (CANCEL has no effect then) or unknown.
             known = call_id in self.pending_acks or call_id in self.active_calls
-            self.transport.sendto(
+            self._send(
                 build_response(200, "OK", message)
                 if known
                 else build_response(481, "Call/Transaction Does Not Exist", message),
@@ -972,8 +1029,8 @@ class MiniSIPServer:
             )
             return
 
-        self.transport.sendto(build_response(200, "OK", message), addr)
-        self.transport.sendto(
+        self._send(build_response(200, "OK", message), addr)
+        self._send(
             build_response(487, "Request Terminated", invite.message), invite.addr
         )
         log_sip_event("INCOMING_CALL_CANCELLED", addr=f"{addr}", call_id=call_id)
@@ -982,10 +1039,10 @@ class MiniSIPServer:
     async def handle_options(self, message: dict[str, str], addr: (str, int)) -> None:
         """Handle the OPTIONS method."""
         if not self.check_cseq(message, addr):
-            self.transport.sendto(build_response(400, "Bad Request", message), addr)
+            self._send(build_response(400, "Bad Request", message), addr)
             return
 
-        self.transport.sendto(
+        self._send(
             build_response(
                 200,
                 "OK",
@@ -1049,7 +1106,7 @@ class MiniSIPServer:
         data = build_request(
             "INVITE", at_address(to_user, target_addr[0]), headers=headers, body=sdp
         )
-        self.transport.sendto(data, target_addr)
+        self._send(data, target_addr)
 
         log_sip_event("INVITE_SENT", addr=f"{target_addr}", call_id=call_id)
         fut = asyncio.get_running_loop().create_future()
@@ -1144,7 +1201,7 @@ class MiniSIPServer:
         }
 
         data = build_request("ACK", to_address, headers=headers)
-        self.transport.sendto(data, target_addr)
+        self._send(data, target_addr)
         log_sip_event("ACK_SENT", addr=f"{target_addr}", call_id=call_id)
 
     def rtp_session(self, call_id: str) -> RtpSession:
@@ -1184,7 +1241,7 @@ class MiniSIPServer:
 
         body = f"Signal={signal}\r\nDuration={duration}"
         data = build_request("INFO", to_header, headers=headers, body=body)
-        self.transport.sendto(data, addr)
+        self._send(data, addr)
         log_sip_event("INFO_SENT", addr=f"{addr}", call_id=call_id, request=data)
 
     async def send_bye(self, call_id: str) -> None:
@@ -1207,15 +1264,40 @@ class MiniSIPServer:
         }
 
         data = build_request("BYE", to_header, headers=headers)
-        self.transport.sendto(data, addr)
+        self._send(data, addr)
         log_sip_event("BYE_SENT", addr=f"{addr}", call_id=call_id)
         self.active_calls.pop(call_id)
         self._close_rtp(call_id)
         await self._fire_event("on_call_ended", dialog)
 
+    def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:
+        """Handle a datagram in a task that stop() can cancel."""
+        task = asyncio.create_task(
+            self.handle_datagram(data, addr), name="sip-datagram"
+        )
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
     async def handle_datagram(self, data: bytes, addr: (str, int)) -> None:
         """Handle a raw UDP datagram."""
-        method, message = parse_sip_message(data)
+        try:
+            await self._handle_datagram(data, addr)
+        except Exception:
+            logger.exception("Error handling SIP datagram from %s", addr)
+
+    async def _handle_datagram(self, data: bytes, addr: tuple[str, int]) -> None:
+        parsed = parse_sip_message(data)
+        if parsed is None:
+            # Keepalives and garbage; a reply would only invite more of it.
+            return
+        method, message = parsed
+
+        # Only REGISTER is authenticated, so everything else must come from a
+        # registered or trusted host.
+        if method != "REGISTER" and not self.is_trusted(addr):
+            log_sip_event("SIP_UNTRUSTED_DROPPED", addr=f"{addr}", method=method)
+            return
+
         log_sip_event(method, addr=f"{addr}", message=message)
 
         # Delegate response to pending_invites
@@ -1227,22 +1309,25 @@ class MiniSIPServer:
                     fut.set_result(message)
             return
 
-        if method == "REGISTER":
-            await self.handle_register(message, addr)
-        elif method == "INVITE":
-            await self.handle_invite(message, addr)
-        elif method == "BYE":
-            await self.handle_bye(message, addr)
-        elif method == "OPTIONS":
-            await self.handle_options(message, addr)
-        elif method == "ACK":
-            await self.handle_ack(message, addr)
-        elif method == "CANCEL":
-            await self.handle_cancel(message, addr)
-        else:
+        if missing := [name for name in REQUIRED_HEADERS if not message.get(name)]:
+            log_sip_event("SIP_BAD_REQUEST", addr=f"{addr}", missing=missing)
+            if method != "ACK":  # ACK is never answered
+                self._send(build_response(400, "Bad Request", message), addr)
+            return
+
+        handler = {
+            "REGISTER": self.handle_register,
+            "INVITE": self.handle_invite,
+            "BYE": self.handle_bye,
+            "OPTIONS": self.handle_options,
+            "ACK": self.handle_ack,
+            "CANCEL": self.handle_cancel,
+        }.get(method)
+        if handler is None:
             log_sip_event("SIP_METHOD_NOT_IMPLEMENTED", addr=f"{addr}", method=method)
-            resp = build_response(501, "Not Implemented", message)
-            self.transport.sendto(resp, addr)
+            self._send(build_response(501, "Not Implemented", message), addr)
+            return
+        await handler(message, addr)
 
     async def start(self) -> None:
         """Start the MiniSIP Server."""
@@ -1252,6 +1337,7 @@ class MiniSIPServer:
             local_addr=(self.host, self.port),
         )
         self.transport = transport
+        await self._resolve_trusted_hosts()
 
         # Start cleanup loop
         self._cleanup_stop.clear()
@@ -1274,6 +1360,10 @@ class MiniSIPServer:
         for task in self._ack_waits.values():
             task.cancel()
         self._ack_waits.clear()
+        handlers = [task for task in self._tasks if task is not asyncio.current_task()]
+        for task in handlers:
+            task.cancel()
+        await asyncio.gather(*handlers, return_exceptions=True)
         for call_id in list(self.rtp_sessions):
             self._close_rtp(call_id)
 
@@ -1291,7 +1381,7 @@ class SIPProtocol(asyncio.DatagramProtocol):
 
     def datagram_received(self, data: bytes, addr: (str, int)) -> None:
         """Delegate to server."""
-        asyncio.create_task(self.server.handle_datagram(data, addr))  # noqa: RUF006, fire and forget
+        self.server.datagram_received(data, addr)
 
     def error_received(self, exc: Exception) -> None:
         """Log transport issues."""

@@ -12,7 +12,7 @@ from pytest_homeassistant.test_util.aiohttp import AiohttpClientMockResponse
 
 from custom_components.sg_150.const import DOMAIN
 from custom_components.sg_150.sip.minisip import MiniSIPServer
-from tests.conftest import API_URL, TOKEN
+from tests.conftest import API_URL, HOST, TOKEN
 from tests.utils import FIXTURES
 
 if TYPE_CHECKING:
@@ -48,6 +48,14 @@ async def test_setup_creates_gateway_and_devices(
         (DOMAIN, config_entry.entry_id), config_entry.entry_id
     )
     assert all(d.via_device_id == gateway.id for d in devices if d.id != gateway.id)
+
+
+async def test_sip_server_trusts_the_configured_gateway(
+    setup_integration: MiniSIPServer,
+) -> None:
+    """The gateway's host is trusted before it registers, other hosts are not."""
+    assert setup_integration.is_trusted((HOST, 5060))
+    assert not setup_integration.is_trusted(("192.0.2.99", 5060))
 
 
 async def test_unload_stops_sip_and_keeps_services(

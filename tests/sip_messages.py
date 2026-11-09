@@ -4,7 +4,8 @@ import re
 
 from custom_components.sg_150.sip.minisip import MiniSIPServer, md5_hex
 
-GATEWAY = ("192.168.1.10", 5060)
+# The gateway sends SIP from the host its API runs on (HOST in conftest.py).
+GATEWAY = ("192.0.2.10", 5060)
 HA_HOST = "127.0.0.1"
 SIP_USER = "gateway"
 SIP_PASSWORD = "secret"  # noqa: S105
@@ -115,5 +116,19 @@ def cancel(call_id: str) -> bytes:
             "To": f"<sip:{HA_NUMBER}@{HA_HOST}>",
             "Call-ID": call_id,
             "CSeq": "1 CANCEL",
+        },
+    )
+
+
+def options(call_id: str, cseq: int) -> bytes:
+    """Build an OPTIONS request from the gateway."""
+    return sip(
+        f"OPTIONS sip:{HA_HOST} SIP/2.0",
+        {
+            "Via": f"SIP/2.0/UDP {GATEWAY[0]}:{GATEWAY[1]};branch=z5",
+            "From": f"<sip:gateway@{GATEWAY[0]}>;tag=o",
+            "To": f"<sip:{HA_HOST}>",
+            "Call-ID": call_id,
+            "CSeq": f"{cseq} OPTIONS",
         },
     )

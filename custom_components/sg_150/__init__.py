@@ -105,6 +105,8 @@ async def async_setup_entry(
             int(entry.options.get(CONF_RTP_PORT_MIN, DEFAULT_RTP_PORT_MIN)),
             int(entry.options.get(CONF_RTP_PORT_MAX, DEFAULT_RTP_PORT_MAX)) + 1,
         ),
+        # Accept the gateway's calls before it registers again after a restart.
+        trusted_hosts=[entry.data.get(CONF_HOST_ADDRESS)],
     )
 
     line = GatewayLine(

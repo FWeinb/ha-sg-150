@@ -15,7 +15,20 @@ from custom_components.sg_150.sip.minisip import (
     SIPDialog,
     md5_hex,
 )
-from tests.sip_messages import GATEWAY, HA_NUMBER, ack, bye, cancel, invite, sip
+from tests.sip_messages import (
+    GATEWAY,
+    HA_HOST,
+    HA_NUMBER,
+    SIP_PASSWORD,
+    SIP_USER,
+    ack,
+    bye,
+    cancel,
+    invite,
+    options,
+    register,
+    sip,
+)
 from tests.utils import FakeTransport, fake_rtp_endpoint
 
 
@@ -150,6 +163,7 @@ class MiniSIPDatagramTests(unittest.IsolatedAsyncioTestCase):
             call_host="127.0.0.1",
             port=5070,
             rtp_endpoint=fake_rtp_endpoint,
+            trusted_hosts=[GATEWAY[0]],
         )
         self.server.transport = FakeTransport()
         self.established: list[str] = []
@@ -199,7 +213,7 @@ class MiniSIPDatagramTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_options_is_answered(self) -> None:
         """OPTIONS gets a 200 OK listing the supported methods."""
-        await self.server.handle_datagram(self._options("o1", 1), GATEWAY)
+        await self.server.handle_datagram(options("o1", 1), GATEWAY)
 
         response = self._sent()[-1]
         assert response.startswith("SIP/2.0 200 OK")
@@ -207,8 +221,8 @@ class MiniSIPDatagramTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_options_with_old_cseq_is_rejected(self) -> None:
         """An out-of-order OPTIONS gets a 400 that is actually sent."""
-        await self.server.handle_datagram(self._options("o2", 5), GATEWAY)
-        await self.server.handle_datagram(self._options("o2", 1), GATEWAY)
+        await self.server.handle_datagram(options("o2", 5), GATEWAY)
+        await self.server.handle_datagram(options("o2", 1), GATEWAY)
 
         assert len(self._sent()) == 2
         assert self._sent()[-1].startswith("SIP/2.0 400 Bad Request")
@@ -259,6 +273,7 @@ class MiniSIPDatagramTests(unittest.IsolatedAsyncioTestCase):
             call_host="127.0.0.1",
             rtp_ports=range(5004, 5005),
             rtp_endpoint=fake_rtp_endpoint,
+            trusted_hosts=[GATEWAY[0]],
         )
         self.server.transport = FakeTransport()
         await self.server.handle_datagram(invite("c6", "*111", HA_NUMBER), GATEWAY)
@@ -276,6 +291,7 @@ class MiniSIPDatagramTests(unittest.IsolatedAsyncioTestCase):
             call_host="127.0.0.1",
             rtp_ports=range(0),
             rtp_endpoint=fake_rtp_endpoint,
+            trusted_hosts=[GATEWAY[0]],
         )
         self.server.transport = FakeTransport()
 
@@ -393,18 +409,237 @@ class MiniSIPDatagramTests(unittest.IsolatedAsyncioTestCase):
 
         assert not self.server.rtp_sessions
 
-    @staticmethod
-    def _options(call_id: str, cseq: int) -> bytes:
-        return sip(
-            "OPTIONS sip:127.0.0.1 SIP/2.0",
+
+STRANGER = ("192.0.2.99", 5060)
+
+
+class MiniSIPSenderTests(unittest.IsolatedAsyncioTestCase):
+    """Who may talk to the server, and what it does with malformed datagrams."""
+
+    def setUp(self) -> None:
+        """Create a server that trusts nobody until the gateway registers."""
+        self.server = MiniSIPServer(
+            {SIP_USER: SIP_PASSWORD},
+            host=HA_HOST,
+            call_host=HA_HOST,
+            rtp_endpoint=fake_rtp_endpoint,
+        )
+        self.server.transport = FakeTransport()
+        self.incoming: list[str] = []
+
+        async def on_incoming_call(context: CallContext) -> IncomingCallDecision:
+            self.incoming.append(context.call_id)
+            return IncomingCallDecision.ANSWER
+
+        self.server.add_listener("on_incoming_call", on_incoming_call)
+
+    def _sent(self) -> list[str]:
+        return [data.decode() for data, _ in self.server.transport.sent]
+
+    async def test_requests_from_an_unknown_address_are_dropped(self) -> None:
+        """No reply, no call and no RTP session for an unregistered sender."""
+        await register(self.server)
+        sent_before = len(self.server.transport.sent)
+
+        for data in (
+            invite("x1", "*111", HA_NUMBER),
+            ack("x1"),
+            bye("x1"),
+            cancel("x1"),
+            options("x2", 1),
+        ):
+            await self.server.handle_datagram(data, STRANGER)
+
+        assert len(self.server.transport.sent) == sent_before
+        assert not self.incoming
+        assert not self.server.rtp_sessions
+        assert not self.server.active_calls
+
+    async def test_register_from_an_unknown_address_is_challenged(self) -> None:
+        """REGISTER carries its own authentication, so anyone gets a challenge."""
+        await register(self.server)
+        await self.server.handle_datagram(
+            sip(
+                f"REGISTER sip:{HA_HOST} SIP/2.0",
+                {
+                    "Via": f"SIP/2.0/UDP {STRANGER[0]}:{STRANGER[1]};branch=z9",
+                    "From": f"<sip:{SIP_USER}@{HA_HOST}>;tag=s",
+                    "To": f"<sip:{SIP_USER}@{HA_HOST}>",
+                    "Call-ID": "register-stranger",
+                    "CSeq": "1 REGISTER",
+                },
+            ),
+            STRANGER,
+        )
+
+        assert self._sent()[-1].startswith("SIP/2.0 401 Unauthorized")
+
+    async def test_registered_ip_is_trusted_on_any_port(self) -> None:
+        """The gateway may send from another source port than it registered from."""
+        await register(self.server)
+
+        await self.server.handle_datagram(
+            invite("c1", "*111", HA_NUMBER), (GATEWAY[0], GATEWAY[1] + 1)
+        )
+
+        assert self.incoming == ["c1"]
+        assert self._sent()[-1].startswith("SIP/2.0 200 OK")
+
+    async def test_configured_host_is_trusted_before_it_registers(self) -> None:
+        """After a restart, the gateway's calls arrive before its next REGISTER."""
+        server = MiniSIPServer(
+            {SIP_USER: SIP_PASSWORD},
+            host=HA_HOST,
+            call_host=HA_HOST,
+            rtp_endpoint=fake_rtp_endpoint,
+            trusted_hosts=[GATEWAY[0]],
+        )
+
+        assert server.is_trusted(GATEWAY)
+        assert not server.is_trusted(STRANGER)
+
+    async def test_trusted_host_names_are_resolved_on_start(self) -> None:
+        """A host name is resolved once; a failure only logs a warning."""
+        server = MiniSIPServer({}, trusted_hosts=["gateway.local", "missing.local"])
+        loop = asyncio.get_running_loop()
+
+        async def getaddrinfo(host: str, *_: object, **__: object) -> list:
+            if host == "missing.local":
+                msg = "Name or service not known"
+                raise OSError(msg)
+            return [(2, 2, 17, "", ("192.0.2.42", 0))]
+
+        with (
+            patch.object(loop, "getaddrinfo", getaddrinfo),
+            self.assertLogs("sip-server", "WARNING") as logs,
+        ):
+            await server._resolve_trusted_hosts()  # noqa: SLF001
+
+        assert server.is_trusted(("192.0.2.42", 5060))
+        assert "missing.local" in logs.output[0]
+
+    async def test_responses_from_an_unknown_address_are_dropped(self) -> None:
+        """A forged response cannot answer our pending INVITE."""
+        await register(self.server)
+        future = asyncio.get_running_loop().create_future()
+        self.server.pending_invites["out-1"] = future
+        response = sip(
+            "SIP/2.0 200 OK",
             {
-                "Via": f"SIP/2.0/UDP {GATEWAY[0]}:{GATEWAY[1]};branch=z5",
-                "From": f"<sip:gateway@{GATEWAY[0]}>;tag=o",
-                "To": "<sip:127.0.0.1>",
-                "Call-ID": call_id,
-                "CSeq": f"{cseq} OPTIONS",
+                "Via": f"SIP/2.0/UDP {HA_HOST}:5060;branch=z1",
+                "From": f"<sip:{HA_NUMBER}@{HA_HOST}>",
+                "To": f"<sip:*111@{GATEWAY[0]}>;tag=gw",
+                "Call-ID": "out-1",
+                "CSeq": "1 INVITE",
             },
         )
+
+        await self.server.handle_datagram(response, STRANGER)
+        assert not future.done()
+
+        await self.server.handle_datagram(response, GATEWAY)
+        assert future.done()
+
+    async def test_keepalives_and_garbage_get_no_reply(self) -> None:
+        """Only SIP requests and responses are handled; nothing else is answered."""
+        await register(self.server)
+        sent_before = len(self.server.transport.sent)
+
+        for data in (b"", b"\r\n", b"\r\n\r\n", b"hello", b"GET / HTTP/1.1\r\n\r\n"):
+            await self.server.handle_datagram(data, GATEWAY)
+
+        assert len(self.server.transport.sent) == sent_before
+
+    async def test_request_without_required_headers_gets_bad_request(self) -> None:
+        """A request missing Call-ID, CSeq, Via, From or To is answered with 400."""
+        await register(self.server)
+
+        await self.server.handle_datagram(
+            sip(
+                f"INVITE sip:{HA_NUMBER}@{HA_HOST} SIP/2.0",
+                {"Via": f"SIP/2.0/UDP {GATEWAY[0]}:{GATEWAY[1]};branch=z1"},
+            ),
+            GATEWAY,
+        )
+
+        assert self._sent()[-1].startswith("SIP/2.0 400 Bad Request")
+        assert not self.incoming
+
+    async def test_incomplete_ack_gets_no_reply(self) -> None:
+        """ACK is never answered, not even when it is malformed."""
+        await register(self.server)
+        sent_before = len(self.server.transport.sent)
+
+        await self.server.handle_datagram(
+            sip(f"ACK sip:{HA_NUMBER}@{HA_HOST} SIP/2.0", {}), GATEWAY
+        )
+
+        assert len(self.server.transport.sent) == sent_before
+
+    async def test_failing_incoming_call_listener_answers_server_error(self) -> None:
+        """An exception in a listener still answers the INVITE."""
+        await register(self.server)
+
+        async def broken(_: CallContext) -> IncomingCallDecision:
+            raise RuntimeError
+
+        self.server.add_listener("on_incoming_call", broken)
+
+        with self.assertLogs("sip-server", "ERROR"):
+            await self.server.handle_datagram(invite("c2", "*111", HA_NUMBER), GATEWAY)
+
+        assert self._sent()[-1].startswith("SIP/2.0 500 Server Internal Error")
+        assert not self.server.rtp_sessions
+
+    async def test_handler_errors_are_logged(self) -> None:
+        """An exception while handling a datagram is logged, not raised."""
+        await register(self.server)
+
+        with (
+            patch.object(self.server, "handle_options", side_effect=RuntimeError),
+            self.assertLogs("sip-server", "ERROR") as logs,
+        ):
+            await self.server.handle_datagram(options("o1", 1), GATEWAY)
+
+        assert "Error handling SIP datagram" in logs.output[0]
+
+    async def test_stop_cancels_handlers_in_flight(self) -> None:
+        """Datagram handler tasks are tracked and cancelled by stop()."""
+        await register(self.server)
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def slow_options(*_: object) -> None:
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        with patch.object(self.server, "handle_options", slow_options):
+            self.server.datagram_received(options("o1", 1), GATEWAY)
+            await started.wait()
+            assert len(self.server._tasks) == 1  # noqa: SLF001
+
+            await self.server.stop()
+
+        assert cancelled.is_set()
+        assert not self.server._tasks  # noqa: SLF001
+
+    async def test_nothing_is_sent_after_stop(self) -> None:
+        """A handler that resumes after stop() does not touch the closed transport."""
+        await register(self.server)
+
+        async def stop_meanwhile(_: CallContext) -> IncomingCallDecision:
+            await self.server.stop()
+            return IncomingCallDecision.RING
+
+        self.server.on_incoming_call[:] = [stop_meanwhile]
+
+        await self.server.handle_datagram(invite("c3", "*111", HA_NUMBER), GATEWAY)
+
+        assert self.server.transport is None
 
 
 if __name__ == "__main__":

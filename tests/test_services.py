@@ -39,6 +39,8 @@ SERVICES = [
     "play_audio",
 ]
 
+SECOND_GATEWAY = ("192.0.2.11", 5060)
+
 
 async def call(
     hass: HomeAssistant, service: str, *, return_response: bool = True, **data: object
@@ -49,10 +51,12 @@ async def call(
     )
 
 
-async def establish_incoming_call(server: MiniSIPServer, call_id: str) -> None:
+async def establish_incoming_call(
+    server: MiniSIPServer, call_id: str, gateway: tuple[str, int] = GATEWAY
+) -> None:
     """Let the front door call Home Assistant and complete the handshake."""
-    await server.handle_datagram(invite(call_id, "*111", HA_NUMBER), GATEWAY)
-    await server.handle_datagram(ack(call_id), GATEWAY)
+    await server.handle_datagram(invite(call_id, "*111", HA_NUMBER), gateway)
+    await server.handle_datagram(ack(call_id), gateway)
 
 
 @pytest.fixture
@@ -64,7 +68,7 @@ async def second_gateway(
     sip_servers: list[MiniSIPServer],
 ) -> tuple[MockConfigEntry, MiniSIPServer]:
     """Set up a second gateway next to the first one."""
-    host = "192.0.2.11"
+    host = SECOND_GATEWAY[0]
     api = f"http://{host}:{API_PORT}/api/op/v1.0"
     devices = json.loads((FIXTURES / "system_devices.json").read_text())
     aioclient_mock.post(f"{api}/oauth/token", json=TOKEN)
@@ -171,7 +175,7 @@ async def test_config_entry_id_selects_the_gateway(
 ) -> None:
     """With two gateways a call must name one with config_entry_id."""
     entry, server = second_gateway
-    await establish_incoming_call(server, "call-4")
+    await establish_incoming_call(server, "call-4", SECOND_GATEWAY)
 
     assert await call(hass, "get_active_calls", config_entry_id=entry.entry_id) == {
         "active_calls": ["call-4"],

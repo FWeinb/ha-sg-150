@@ -223,6 +223,7 @@ class TalkbackTests(unittest.IsolatedAsyncioTestCase):
             host=HA_HOST,
             call_host=HA_HOST,
             rtp_endpoint=fake_rtp_endpoint,
+            trusted_hosts=[GATEWAY[0]],
         )
         self.transport = FakeTransport()
         self.server.transport = self.transport
