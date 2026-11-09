@@ -40,6 +40,10 @@
         {
           "type": "VIDEO_SENDER",
           "properties": {"cameraId": "camera-front"}
+        },
+        {
+          "type": "DOOR_LIGHT",
+          "properties": {"color": "warm"}
         }
       ]
     },
@@ -169,6 +173,25 @@
           "type": "AUTOMATION",
           "properties": {"controllerId": "controller-1", "automationItems": []}
         }
+      ]
+    },
+    {
+      "id": "intercom-new",
+      "name": "New Intercom",
+      "type": "VIDEO_INTERCOM",
+      "capabilities": [
+        {
+          "type": "IN_HOME",
+          "properties": {"deviceType": "VIDEO_INTERCOM"}
+        },
+        {
+          "type": "VIDEO_EXTRACTION",
+          "properties": {
+            "type": "H264_STREAM",
+            "url": "rtsp://192.0.2.10/video/intercom-new"
+          }
+        },
+        {"type": "FACE_RECOGNITION", "properties": {"enabled": true}}
       ]
     }
   ]

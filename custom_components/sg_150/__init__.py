@@ -13,6 +13,7 @@ import dns.rdata
 import dns.rdataclass
 import dns.rdatatype
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
+from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.loader import async_get_loaded_integration
@@ -125,9 +126,18 @@ async def async_setup_entry(
 
     await coordinator.async_config_entry_first_refresh()
     await coordinator.async_register_gateway_device()
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    await line.start()
+    try:
+        await line.start()
+    except OSError as err:
+        msg = f"Could not listen on SIP port {server.port}: {err}"
+        raise ConfigEntryNotReady(msg) from err
+
+    try:
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    except BaseException:
+        await line.stop()
+        raise
 
     return True
 
@@ -137,5 +147,7 @@ async def async_unload_entry(
     entry: SG150ConfigEntry,
 ) -> bool:
     """Handle removal of an entry."""
-    await entry.runtime_data.line.stop()
-    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if unloaded:
+        await entry.runtime_data.line.stop()
+    return unloaded
