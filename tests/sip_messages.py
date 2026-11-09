@@ -132,3 +132,19 @@ def options(call_id: str, cseq: int) -> bytes:
             "CSeq": f"{cseq} OPTIONS",
         },
     )
+
+
+def invite_response(
+    status: str, call_id: str, *, contact: str | None = f"<sip:*111@{GATEWAY[0]}>"
+) -> bytes:
+    """Build the gateway's response to our INVITE to the front door."""
+    headers = {
+        "Via": f"SIP/2.0/UDP {HA_HOST}:5060;branch=z9hG4bK1",
+        "From": f"<sip:{HA_NUMBER}@{HA_HOST}>;tag=ha",
+        "To": f"<sip:*111@{GATEWAY[0]}>;tag=gw",
+        "Call-ID": call_id,
+        "CSeq": "1 INVITE",
+    }
+    if contact:
+        headers["Contact"] = contact
+    return sip(status, headers, INVITE_SDP if status.startswith("SIP/2.0 2") else "")

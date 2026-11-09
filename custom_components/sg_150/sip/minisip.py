@@ -15,6 +15,7 @@ import logging
 import os
 import random
 import re
+import secrets
 import socket
 import time
 from collections.abc import Callable, Iterable
@@ -281,10 +282,10 @@ def build_response(
 
 
 def build_request(
-    method: str, address: (str, int), headers: dict[str, str], body: str | None = None
-) -> str:
-    """Create a request message."""
-    request_lines = [f"{method} sip:{address} SIP/2.0"]
+    method: str, uri: str, headers: dict[str, str], body: str | None = None
+) -> bytes:
+    """Create a request message for the complete Request-URI `uri`."""
+    request_lines = [f"{method} {uri} SIP/2.0"]
     for k, v in headers.items():
         request_lines.append(f"{k}: {v}")
 
@@ -297,8 +298,22 @@ def build_request(
 
 
 def new_branch_id() -> str:
-    """Create a new random branch id."""
-    return f"z{random.randint(10000, 99999)}"  # noqa: S311 not crypto relevant
+    """Create a new random branch id with the RFC 3261 magic cookie."""
+    return f"z9hG4bK{secrets.token_hex(8)}"
+
+
+def new_tag() -> str:
+    """Create a new random From/To tag."""
+    return secrets.token_hex(4)
+
+
+def header_uri(value: str | None) -> str | None:
+    """Return the URI in a From/To/Contact header, without name or parameters."""
+    if not value:
+        return None
+    if "<" in value and ">" in value:
+        return value.split("<", 1)[1].split(">", 1)[0]
+    return value.split(";", 1)[0].strip() or None
 
 
 def build_sdp(
@@ -366,15 +381,33 @@ class SIPRegistration:
 
 @dataclass(frozen=True)
 class SIPDialog:
-    """State of an established call."""
+    """
+    State of an established call.
+
+    Requests within the call go to `remote_target`, with `local` as From and
+    `remote` as To, whichever side sent the INVITE.
+    """
 
     call_id: str
     direction: Literal["incoming", "outgoing"]
     addr: tuple[str, int]
-    from_header: str
-    to_header: str
-    contact: str | None
+    # Our From/To header value, including our tag.
+    local: str
+    # Their From/To header value, including their tag.
+    remote: str
+    # The URI from their Contact, or from `remote` if they sent none.
+    remote_target: str
     media: dict[str, any] = field(default_factory=dict)
+
+    @property
+    def from_header(self) -> str:
+        """Return the From header of the INVITE: the caller."""
+        return self.remote if self.direction == "incoming" else self.local
+
+    @property
+    def to_header(self) -> str:
+        """Return the To header of the INVITE: the callee."""
+        return self.local if self.direction == "incoming" else self.remote
 
 
 @dataclass
@@ -425,7 +458,8 @@ class MiniSIPServer:
         self.users = users  # username -> password
         self.registrations: dict[str, SIPRegistration] = {}
         self.challenges = {}
-        self.pending_invites = {}
+        # Responses to our pending outgoing INVITEs, by call id.
+        self.pending_invites: dict[str, asyncio.Queue[dict[str, str]]] = {}
         # Incoming calls that are ringing, waiting for answer_call or reject_call.
         self.ringing: dict[str, _IncomingInvite] = {}
         # Accepted incoming calls waiting for the caller's ACK, by call id.
@@ -537,6 +571,29 @@ class MiniSIPServer:
                 logger.warning("Could not resolve SIP host %s: %s", trusted_host, err)
                 continue
             self._trusted_ips.update(str(info[4][0]) for info in infos)
+
+    def _contact(self, header: str | None) -> str:
+        """Return our Contact for the user in one of our From/To headers."""
+        return sip_address(sip_user(header) or "", self.server_address())
+
+    def _in_dialog_request(
+        self,
+        dialog: SIPDialog,
+        method: str,
+        extra_headers: dict[str, str] | None = None,
+        body: str | None = None,
+    ) -> bytes:
+        """Build a new request within the call, such as BYE or INFO."""
+        headers = {
+            "Via": f"SIP/2.0/UDP {self.server_address()};branch={new_branch_id()}",
+            "From": dialog.local,
+            "To": dialog.remote,
+            "Call-ID": dialog.call_id,
+            "CSeq": f"{self.next_cseq_for(dialog.call_id)} {method}",
+            "Contact": self._contact(dialog.local),
+            **(extra_headers or {}),
+        }
+        return build_request(method, dialog.remote_target, headers=headers, body=body)
 
     def _send(self, data: bytes, addr: tuple[str, int]) -> None:
         """Send a datagram, unless the server stopped meanwhile."""
@@ -851,10 +908,8 @@ class MiniSIPServer:
             remote_contact=message.get("Contact"),
             media=self.parse_sdp_media(message.get(":body")) or {},
         )
-        message["Contact"] = sip_address(
-            sip_user(message.get("To")) or "", self.server_address()
-        )
-        message["To"] = f"{message.get('To')};tag=minisip"
+        message["Contact"] = self._contact(message.get("To"))
+        message["To"] = f"{message.get('To')};tag={new_tag()}"
 
         ringing_resp = build_response(180, "Ringing", message)
         self._send(ringing_resp, addr)
@@ -929,9 +984,10 @@ class MiniSIPServer:
             call_id=call_id,
             direction="incoming",
             addr=addr,
-            from_header=message.get("From"),
-            to_header=message.get("To"),
-            contact=invite.remote_contact,
+            local=message.get("To"),
+            remote=message.get("From"),
+            remote_target=header_uri(invite.remote_contact)
+            or header_uri(message.get("From")),
             media=media,
         )
         self._ack_waits[call_id] = asyncio.create_task(
@@ -1080,7 +1136,7 @@ class MiniSIPServer:
             if call_id not in self.active_calls:
                 self._close_rtp(call_id)
 
-    async def _send_invite(  # noqa: PLR0913, PLR0915, PLR0917
+    async def _send_invite(  # noqa: PLR0913, PLR0917
         self,
         call_id: str,
         rtp_port: int,
@@ -1090,119 +1146,137 @@ class MiniSIPServer:
         timeout: int,  # noqa: ASYNC109
     ) -> (str, dict[str, str]):
         sdp = build_sdp(self.call_host, rtp_port, [PCMA, PCMU])
-        cseq_num = self.next_cseq_for(call_id)
-        orig_from = self.sip_user_from(from_user)
-
+        local = f"{self.sip_user_from(from_user)};tag={new_tag()}"
+        request_uri = f"sip:{at_address(to_user, target_addr[0])}"
         headers = {
             "Via": f"SIP/2.0/UDP {self.server_address()};branch={new_branch_id()}",
-            "From": orig_from,
+            "From": local,
             "To": sip_address(to_user, target_addr[0]),
             "Call-ID": call_id,
-            "CSeq": f"{cseq_num} INVITE",
-            "Contact": orig_from,
+            "CSeq": f"{self.next_cseq_for(call_id)} INVITE",
+            "Contact": self._contact(local),
             "Content-Type": "application/sdp",
         }
 
-        data = build_request(
-            "INVITE", at_address(to_user, target_addr[0]), headers=headers, body=sdp
-        )
-        self._send(data, target_addr)
-
-        log_sip_event("INVITE_SENT", addr=f"{target_addr}", call_id=call_id)
-        fut = asyncio.get_running_loop().create_future()
-        self.pending_invites[call_id] = fut
-
-        call_state = {"status": "INVITE_SENT", "final": False}
-
+        # Every response to the INVITE is queued, so none is lost when several
+        # arrive before this task runs again.
+        responses: asyncio.Queue[dict[str, str]] = asyncio.Queue()
+        self.pending_invites[call_id] = responses
         try:
-            while not call_state["final"]:
-                headers_resp = await asyncio.wait_for(fut, timeout)
-                status_line = headers_resp.get(":start_line", "")
-                code = int(status_line.split()[1]) if status_line else 0
+            self._send(
+                build_request("INVITE", request_uri, headers=headers, body=sdp),
+                target_addr,
+            )
+            log_sip_event("INVITE_SENT", addr=f"{target_addr}", call_id=call_id)
 
-                if code == STATUS_TRYING:
-                    log_sip_event("TRYING", addr=f"{target_addr}", call_id=call_id)
-                    call_state["status"] = "TRYING"
-                    await self._fire_event("on_call_trying", call_id, target_addr)
-                    fut = asyncio.get_running_loop().create_future()
-                    self.pending_invites[call_id] = fut
+            while True:
+                response = await asyncio.wait_for(responses.get(), timeout)
+                code = int(response[":start_line"].split()[1])
 
-                elif code == STATUS_RINGING:
-                    log_sip_event("RINGING", addr=f"{target_addr}", call_id=call_id)
-                    call_state["status"] = "RINGING"
-                    await self._fire_event("on_call_ringing", call_id, target_addr)
-                    fut = asyncio.get_running_loop().create_future()
-                    self.pending_invites[call_id] = fut
+                if code < STATUS_SUCCESS_RESPONSE:
+                    await self._outgoing_provisional(code, call_id, target_addr)
+                    continue
 
-                elif code == STATUS_BUSY:
-                    log_sip_event("BUSY", addr=f"{target_addr}", call_id=call_id)
-                    call_state["status"] = "BUSY"
-                    call_state["final"] = True
-                    self.pending_invites.pop(call_id, None)
-                    await self._fire_event("on_call_busy", call_id, target_addr)
-                    return None, None
-                # Any success response
-                elif STATUS_SUCCESS_RESPONSE <= code < STATUS_REDIRECT_RESPONSE:
-                    log_sip_event("CONNECTED", addr=f"{target_addr}", call_id=call_id)
-                    call_state["status"] = "CONNECTED"
-                    call_state["final"] = True
-                    await self.send_ack(headers_resp, target_addr)
-                    media = self.parse_sdp_media(headers_resp.get(":body")) or {}
-                    session = self.rtp_sessions[call_id]
-                    if media.get("payload_type") in CODEC_NAMES:
-                        session.payload_type = media["payload_type"]
-                    if media.get("ip") and media.get("port"):
-                        session.remote = (media["ip"], media["port"])
-                    dialog = SIPDialog(
-                        call_id=call_id,
-                        direction="outgoing",
-                        addr=target_addr,
-                        from_header=orig_from,
-                        to_header=headers_resp.get("To"),
-                        contact=headers_resp.get("Contact"),
-                        media=media,
+                if code < STATUS_REDIRECT_RESPONSE:
+                    await self._establish_outgoing(
+                        call_id, target_addr, local, response
                     )
-                    self.active_calls[call_id] = dialog
-                    session.start()
-                    await self._fire_event("on_call_established", dialog)
-                    return call_id, headers_resp
+                    return call_id, response
 
+                # A final failure is ACKed within the INVITE transaction.
+                self._send(
+                    build_request(
+                        "ACK",
+                        request_uri,
+                        headers={
+                            "Via": headers["Via"],
+                            "From": local,
+                            "To": response.get("To"),
+                            "Call-ID": call_id,
+                            "CSeq": f"{headers['CSeq'].split()[0]} ACK",
+                        },
+                    ),
+                    target_addr,
+                )
+                if code == STATUS_BUSY:
+                    log_sip_event("BUSY", addr=f"{target_addr}", call_id=call_id)
+                    await self._fire_event("on_call_busy", call_id, target_addr)
                 else:
                     log_sip_event(
-                        "CALL_FAILED",
-                        addr=f"{target_addr}",
-                        call_id=call_id,
-                        code=code,
+                        "CALL_FAILED", addr=f"{target_addr}", call_id=call_id, code=code
                     )
-                    call_state["status"] = "FAILED"
-                    call_state["final"] = True
-                    self.pending_invites.pop(call_id, None)
                     await self._fire_event("on_call_failed", call_id, target_addr, code)
-                    return None, None
+                return None, None
 
         except TimeoutError:
             log_sip_event("INVITE_TIMEOUT", addr=f"{target_addr}", call_id=call_id)
-            self.pending_invites.pop(call_id, None)
             return None, None
+        finally:
+            self.pending_invites.pop(call_id, None)
 
-    async def send_ack(self, resp_headers: dict[str, str], target_addr: str) -> None:
-        """Send a ACK."""
-        call_id = resp_headers.get("Call-ID")
-        cseq_num, _ = self.parse_cseq(resp_headers.get("CSeq"))
-        to_address = resp_headers.get("To").split("<")[1].split(">")[0]
+    async def _outgoing_provisional(
+        self, code: int, call_id: str, target_addr: tuple[str, int]
+    ) -> None:
+        """Report a 1xx response to our INVITE."""
+        if code == STATUS_TRYING:
+            log_sip_event("TRYING", addr=f"{target_addr}", call_id=call_id)
+            await self._fire_event("on_call_trying", call_id, target_addr)
+        elif code == STATUS_RINGING:
+            log_sip_event("RINGING", addr=f"{target_addr}", call_id=call_id)
+            await self._fire_event("on_call_ringing", call_id, target_addr)
+        else:
+            log_sip_event(
+                "PROVISIONAL", addr=f"{target_addr}", call_id=call_id, code=code
+            )
 
-        headers = {
-            "Via": f"SIP/2.0/UDP {self.server_address()};branch={new_branch_id()}",
-            "From": resp_headers.get("From"),
-            "To": resp_headers.get("To"),
-            "Call-ID": call_id,
-            "CSeq": f"{cseq_num} ACK",
-            "Contact": resp_headers.get("Contact"),
-        }
-
-        data = build_request("ACK", to_address, headers=headers)
-        self._send(data, target_addr)
+    async def _establish_outgoing(
+        self,
+        call_id: str,
+        target_addr: tuple[str, int],
+        local: str,
+        response: dict[str, str],
+    ) -> None:
+        """ACK the 2xx to our INVITE and start the call."""
+        log_sip_event("CONNECTED", addr=f"{target_addr}", call_id=call_id)
+        media = self.parse_sdp_media(response.get(":body")) or {}
+        dialog = SIPDialog(
+            call_id=call_id,
+            direction="outgoing",
+            addr=target_addr,
+            local=local,
+            remote=response.get("To"),
+            remote_target=header_uri(response.get("Contact"))
+            or header_uri(response.get("To")),
+            media=media,
+        )
+        cseq_num, _ = self.parse_cseq(response.get("CSeq"))
+        self._send(
+            build_request(
+                "ACK",
+                dialog.remote_target,
+                headers={
+                    "Via": (
+                        f"SIP/2.0/UDP {self.server_address()};branch={new_branch_id()}"
+                    ),
+                    "From": dialog.local,
+                    "To": dialog.remote,
+                    "Call-ID": call_id,
+                    "CSeq": f"{cseq_num} ACK",
+                    "Contact": self._contact(dialog.local),
+                },
+            ),
+            target_addr,
+        )
         log_sip_event("ACK_SENT", addr=f"{target_addr}", call_id=call_id)
+
+        session = self.rtp_sessions[call_id]
+        if media.get("payload_type") in CODEC_NAMES:
+            session.payload_type = media["payload_type"]
+        if media.get("ip") and media.get("port"):
+            session.remote = (media["ip"], media["port"])
+        self.active_calls[call_id] = dialog
+        session.start()
+        await self._fire_event("on_call_established", dialog)
 
     def rtp_session(self, call_id: str) -> RtpSession:
         """Return the RTP session of an established call."""
@@ -1226,21 +1300,13 @@ class MiniSIPServer:
             raise ValueError(_msg)
 
         dialog = self.active_calls[call_id]
-        addr, from_header, to_header = dialog.addr, dialog.from_header, dialog.to_header
-
-        cseq_num = self.next_cseq_for(call_id)
-        headers = {
-            "Via": f"SIP/2.0/UDP {self.server_address()};branch={new_branch_id()}",
-            "From": from_header,
-            "To": to_header,
-            "Call-ID": call_id,
-            "CSeq": f"{cseq_num} INFO",
-            "Content-Type": "application/dtmf-relay",
-            "Contact": from_header,
-        }
-
-        body = f"Signal={signal}\r\nDuration={duration}"
-        data = build_request("INFO", to_header, headers=headers, body=body)
+        addr = dialog.addr
+        data = self._in_dialog_request(
+            dialog,
+            "INFO",
+            {"Content-Type": "application/dtmf-relay"},
+            body=f"Signal={signal}\r\nDuration={duration}",
+        )
         self._send(data, addr)
         log_sip_event("INFO_SENT", addr=f"{addr}", call_id=call_id, request=data)
 
@@ -1251,20 +1317,8 @@ class MiniSIPServer:
             raise ValueError(_msg)
 
         dialog = self.active_calls[call_id]
-        addr, from_header, to_header = dialog.addr, dialog.from_header, dialog.to_header
-
-        cseq_num = self.next_cseq_for(call_id)
-        headers = {
-            "Via": f"SIP/2.0/UDP {self.server_address()};branch={new_branch_id()}",
-            "From": from_header,
-            "To": to_header,
-            "Call-ID": call_id,
-            "CSeq": f"{cseq_num} BYE",
-            "Contact": from_header,
-        }
-
-        data = build_request("BYE", to_header, headers=headers)
-        self._send(data, addr)
+        addr = dialog.addr
+        self._send(self._in_dialog_request(dialog, "BYE"), addr)
         log_sip_event("BYE_SENT", addr=f"{addr}", call_id=call_id)
         self.active_calls.pop(call_id)
         self._close_rtp(call_id)
@@ -1300,13 +1354,12 @@ class MiniSIPServer:
 
         log_sip_event(method, addr=f"{addr}", message=message)
 
-        # Delegate response to pending_invites
+        # Queue responses to our INVITEs for the task waiting in _send_invite.
         if message[":start_line"].startswith("SIP/2.0"):
-            call_id = message.get("Call-ID")
-            if call_id in self.pending_invites:
-                fut = self.pending_invites.pop(call_id)
-                if not fut.done():
-                    fut.set_result(message)
+            _, cseq_method = self.parse_cseq(message.get("CSeq"))
+            responses = self.pending_invites.get(message.get("Call-ID"))
+            if responses is not None and cseq_method == "INVITE":
+                responses.put_nowait(message)
             return
 
         if missing := [name for name in REQUIRED_HEADERS if not message.get(name)]:

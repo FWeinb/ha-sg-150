@@ -1,6 +1,7 @@
 """Behavioral tests for the MiniSIP server."""
 
 import asyncio
+import contextlib
 import re
 import unittest
 from unittest.mock import patch
@@ -25,6 +26,7 @@ from tests.sip_messages import (
     bye,
     cancel,
     invite,
+    invite_response,
     options,
     register,
     sip,
@@ -138,9 +140,9 @@ class MiniSIPBehaviorTests(unittest.IsolatedAsyncioTestCase):
             call_id="call-456",
             direction="incoming",
             addr=("192.168.1.10", 5060),
-            from_header="<sip:1001@192.168.1.10>",
-            to_header="<sip:2000@127.0.0.1>",
-            contact="<sip:1001@192.168.1.10>",
+            local="<sip:2000@127.0.0.1>;tag=ha",
+            remote="<sip:1001@192.168.1.10>;tag=gw",
+            remote_target="sip:1001@192.168.1.10",
         )
 
         await server.handle_bye(
@@ -354,8 +356,10 @@ class MiniSIPDatagramTests(unittest.IsolatedAsyncioTestCase):
         await self.server.answer_call("r1")
         await self.server.handle_datagram(ack("r1"), GATEWAY)
 
-        assert self._sent()[-1].startswith("SIP/2.0 200 OK")
-        assert ";tag=minisip" in self._sent()[-1]
+        ringing, ok = self._sent()
+        assert ok.startswith("SIP/2.0 200 OK")
+        to_tag = re.search(r"\r\nTo: [^\r]*;tag=(\w+)", ok).group(1)
+        assert f";tag={to_tag}\r\n" in ringing
         assert self.established == ["r1"]
 
     async def test_ringing_call_can_be_rejected(self) -> None:
@@ -521,8 +525,8 @@ class MiniSIPSenderTests(unittest.IsolatedAsyncioTestCase):
     async def test_responses_from_an_unknown_address_are_dropped(self) -> None:
         """A forged response cannot answer our pending INVITE."""
         await register(self.server)
-        future = asyncio.get_running_loop().create_future()
-        self.server.pending_invites["out-1"] = future
+        responses = asyncio.Queue()
+        self.server.pending_invites["out-1"] = responses
         response = sip(
             "SIP/2.0 200 OK",
             {
@@ -535,10 +539,10 @@ class MiniSIPSenderTests(unittest.IsolatedAsyncioTestCase):
         )
 
         await self.server.handle_datagram(response, STRANGER)
-        assert not future.done()
+        assert responses.empty()
 
         await self.server.handle_datagram(response, GATEWAY)
-        assert future.done()
+        assert responses.qsize() == 1
 
     async def test_keepalives_and_garbage_get_no_reply(self) -> None:
         """Only SIP requests and responses are handled; nothing else is answered."""
@@ -640,6 +644,171 @@ class MiniSIPSenderTests(unittest.IsolatedAsyncioTestCase):
         await self.server.handle_datagram(invite("c3", "*111", HA_NUMBER), GATEWAY)
 
         assert self.server.transport is None
+
+
+def _header(message: str, name: str) -> str:
+    return re.search(rf"\r\n{name}: ([^\r]*)", message).group(1)
+
+
+class MiniSIPDialogTests(unittest.IsolatedAsyncioTestCase):
+    """Response handling and the requests we send within a call."""
+
+    def setUp(self) -> None:
+        """Create a server on a non-default port that trusts the gateway."""
+        self.server = MiniSIPServer(
+            {SIP_USER: SIP_PASSWORD},
+            host=HA_HOST,
+            call_host=HA_HOST,
+            port=5070,
+            rtp_endpoint=fake_rtp_endpoint,
+            trusted_hosts=[GATEWAY[0]],
+        )
+        self.server.transport = FakeTransport()
+
+    def _sent(self) -> list[str]:
+        return [data.decode() for data, _ in self.server.transport.sent]
+
+    def _requests(self, method: str) -> list[str]:
+        return [m for m in self._sent() if m.startswith(f"{method} ")]
+
+    async def _dial(self, give_up_after: float = 1) -> tuple[asyncio.Task, str]:
+        """Start an outgoing call to the front door and return its call id."""
+        task = asyncio.create_task(
+            self.server.send_invite(GATEWAY, HA_NUMBER, "*111", timeout=give_up_after)
+        )
+        while not self._requests("INVITE"):  # noqa: ASYNC110
+            await asyncio.sleep(0)
+        return task, _header(self._requests("INVITE")[0], "Call-ID")
+
+    async def test_responses_arriving_together_establish_the_call(self) -> None:
+        """A 180 directly followed by a 200 must not lose the 200."""
+        task, call_id = await self._dial()
+
+        await self.server.handle_datagram(
+            invite_response("SIP/2.0 180 Ringing", call_id), GATEWAY
+        )
+        await self.server.handle_datagram(
+            invite_response("SIP/2.0 200 OK", call_id), GATEWAY
+        )
+
+        assert (await task)[0] == call_id
+        assert call_id in self.server.active_calls
+        assert not self.server.pending_invites
+
+    async def test_other_provisional_responses_keep_waiting(self) -> None:
+        """183 Session Progress is provisional, not a failure."""
+        task, call_id = await self._dial()
+
+        await self.server.handle_datagram(
+            invite_response("SIP/2.0 183 Session Progress", call_id), GATEWAY
+        )
+        await self.server.handle_datagram(
+            invite_response("SIP/2.0 200 OK", call_id), GATEWAY
+        )
+
+        assert (await task)[0] == call_id
+
+    async def test_cancelled_dial_forgets_its_response_queue(self) -> None:
+        """Cancelling the calling task removes its pending INVITE."""
+        task, _ = await self._dial()
+
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+        assert not self.server.pending_invites
+        assert not self.server.rtp_sessions
+
+    async def test_outgoing_invite_is_well_formed(self) -> None:
+        """Our INVITE has a From tag, an RFC 3261 branch and a Contact with port."""
+        task, _ = await self._dial(give_up_after=0.01)
+        await task
+
+        request = self._requests("INVITE")[0]
+        assert request.startswith(f"INVITE sip:*111@{GATEWAY[0]} SIP/2.0\r\n")
+        assert re.fullmatch(
+            rf"<sip:{re.escape(HA_NUMBER)}@{HA_HOST}>;tag=\w+",
+            _header(request, "From"),
+        )
+        assert _header(request, "To") == f"<sip:*111@{GATEWAY[0]}>"
+        assert ";branch=z9hG4bK" in _header(request, "Via")
+        assert _header(request, "Contact") == f"<sip:{HA_NUMBER}@{HA_HOST}:5070>"
+
+    async def test_outgoing_call_requests_use_the_dialog(self) -> None:
+        """ACK, INFO and BYE go to the remote Contact with our tag and theirs."""
+        task, call_id = await self._dial()
+        await self.server.handle_datagram(
+            invite_response("SIP/2.0 200 OK", call_id), GATEWAY
+        )
+        await task
+        await self.server.send_sip_info_dtmf(call_id, "1", "250")
+        await self.server.send_bye(call_id)
+
+        from_header = _header(self._requests("INVITE")[0], "From")
+        for method, cseq in (("ACK", "1 ACK"), ("INFO", "2 INFO"), ("BYE", "3 BYE")):
+            (request,) = self._requests(method)
+            assert request.startswith(f"{method} sip:*111@{GATEWAY[0]} SIP/2.0\r\n")
+            assert _header(request, "From") == from_header
+            assert _header(request, "To") == f"<sip:*111@{GATEWAY[0]}>;tag=gw"
+            assert _header(request, "CSeq") == cseq
+            assert _header(request, "Contact") == f"<sip:{HA_NUMBER}@{HA_HOST}:5070>"
+
+    async def test_failed_outgoing_call_is_acked_in_the_invite_transaction(
+        self,
+    ) -> None:
+        """A non-2xx final response is ACKed with the INVITE's branch and URI."""
+        task, call_id = await self._dial()
+
+        await self.server.handle_datagram(
+            invite_response("SIP/2.0 486 Busy Here", call_id, contact=None), GATEWAY
+        )
+
+        assert await task == (None, None)
+        invite_request = self._requests("INVITE")[0]
+        (ack_request,) = self._requests("ACK")
+        assert ack_request.startswith(f"ACK sip:*111@{GATEWAY[0]} SIP/2.0\r\n")
+        assert _header(ack_request, "Via") == _header(invite_request, "Via")
+        assert _header(ack_request, "From") == _header(invite_request, "From")
+        assert _header(ack_request, "To") == f"<sip:*111@{GATEWAY[0]}>;tag=gw"
+        assert _header(ack_request, "CSeq") == "1 ACK"
+
+    async def test_incoming_call_bye_uses_the_dialog(self) -> None:
+        """Our BYE goes to the caller's Contact, with From and To swapped."""
+        await self.server.handle_datagram(invite("c1", "*111", HA_NUMBER), GATEWAY)
+        await self.server.handle_datagram(ack("c1"), GATEWAY)
+        ok = self._sent()[-1]
+
+        await self.server.send_bye("c1")
+
+        (request,) = self._requests("BYE")
+        assert request.startswith(f"BYE sip:*111@{GATEWAY[0]} SIP/2.0\r\n")
+        assert _header(request, "From") == _header(ok, "To")
+        assert _header(request, "From").startswith(f"<sip:{HA_NUMBER}@{HA_HOST}>;tag=")
+        assert _header(request, "To") == f"<sip:*111@{GATEWAY[0]}>;tag=gw"
+        assert _header(request, "Contact") == f"<sip:{HA_NUMBER}@{HA_HOST}:5070>"
+        assert ";branch=z9hG4bK" in _header(request, "Via")
+
+    async def test_incoming_calls_get_their_own_to_tag(self) -> None:
+        """Each incoming call is answered with a fresh To tag."""
+        await self.server.handle_datagram(invite("c1", "*111", HA_NUMBER), GATEWAY)
+        await self.server.handle_datagram(invite("c2", "*111", HA_NUMBER), GATEWAY)
+
+        tags = {
+            _header(m, "To").rsplit(";tag=", 1)[1]
+            for m in self._sent()
+            if m.startswith("SIP/2.0 200 OK")
+        }
+        assert len(tags) == 2
+
+    async def test_remote_target_falls_back_to_the_from_uri(self) -> None:
+        """Without a Contact in the INVITE, requests go to the caller's From URI."""
+        data = invite("c1", "*111", HA_NUMBER).replace(
+            f"Contact: <sip:*111@{GATEWAY[0]}>\r\n".encode(), b""
+        )
+        await self.server.handle_datagram(data, GATEWAY)
+        await self.server.handle_datagram(ack("c1"), GATEWAY)
+
+        assert self.server.active_calls["c1"].remote_target == f"sip:*111@{GATEWAY[0]}"
 
 
 if __name__ == "__main__":
