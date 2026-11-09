@@ -351,6 +351,36 @@ class RtpSessionTests(unittest.IsolatedAsyncioTestCase):
         assert closed == [True]
         assert session.transport is None
 
+    async def test_silence_from_the_remote_times_out_once(self) -> None:
+        """on_timeout fires once when nothing arrived for receive_timeout."""
+        session, _ = self._session(remote=GATEWAY_RTP)
+        timeouts = []
+        session.on_timeout = lambda: timeouts.append(True)
+        session.receive_timeout = 0.05
+
+        session.start()
+        await asyncio.sleep(0.15)
+        session.close()
+
+        assert timeouts == [True]
+
+    async def test_received_packets_keep_the_session_alive(self) -> None:
+        """Any received RTP packet, even telephone-event, resets the timeout."""
+        session, _ = self._session(remote=GATEWAY_RTP)
+        timeouts = []
+        session.on_timeout = lambda: timeouts.append(True)
+        session.receive_timeout = 0.05
+
+        session.start()
+        for sequence in range(8):
+            await asyncio.sleep(0.02)
+            session.datagram_received(
+                _packet(sequence, pt=101 if sequence % 2 else PCMA), GATEWAY_RTP
+            )
+        session.close()
+
+        assert not timeouts
+
 
 class RtpPortPoolTests(unittest.TestCase):
     """Ports are handed out once and come back on release."""

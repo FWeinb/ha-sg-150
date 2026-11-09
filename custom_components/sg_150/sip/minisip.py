@@ -18,10 +18,10 @@ import re
 import secrets
 import socket
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Coroutine, Iterable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Literal
+from typing import Any, Literal
 
 import numpy as np
 import soundfile as sf
@@ -30,6 +30,7 @@ from .rtp import (
     CODEC_NAMES,
     PCMA,
     PCMU,
+    RTP_TIMEOUT,
     RtpEndpointFactory,
     RtpPortPool,
     RtpSession,
@@ -81,10 +82,12 @@ STATUS_TRYING = 100
 STATUS_RINGING = 180
 STATUS_BUSY = 486
 
-# RFC 3261 timers: our 200 OK to an INVITE is resent from T1, doubling up to
-# T2, until the ACK arrives or 64 * T1 have passed.
+# RFC 3261 timers: our requests and our 200 OK to an INVITE are resent from
+# T1, doubling up to T2, until answered or 64 * T1 have passed.
 TIMER_T1 = 0.5
 TIMER_T2 = 4.0
+# How long an outgoing call may ring after the first provisional response.
+INVITE_RING_TIMEOUT = 60.0
 
 DEFAULT_RTP_PORTS = range(5004, 5014)
 
@@ -420,6 +423,52 @@ class _IncomingInvite:
     media: dict[str, any]
 
 
+@dataclass
+class _OutgoingInvite:
+    """An INVITE we sent, until the call is established or given up."""
+
+    request_uri: str
+    headers: dict[str, str]
+    addr: tuple[str, int]
+    # Responses for the task in _send_invite; None makes it give up.
+    responses: asyncio.Queue[dict[str, str] | None] = field(
+        default_factory=asyncio.Queue
+    )
+    # A provisional response arrived, so the INVITE may be cancelled.
+    provisional: bool = False
+    # Established, failed or abandoned.
+    finished: bool = False
+    # The ACK for a 2xx that arrived after we gave up, resent with the 2xx.
+    ack: bytes | None = None
+
+    @property
+    def call_id(self) -> str:
+        """Return the call id."""
+        return self.headers["Call-ID"]
+
+    def _transaction_request(self, method: str, to_header: str) -> bytes:
+        """Build a CANCEL or non-2xx ACK, which belong to the INVITE's transaction."""
+        return build_request(
+            method,
+            self.request_uri,
+            headers={
+                "Via": self.headers["Via"],
+                "From": self.headers["From"],
+                "To": to_header,
+                "Call-ID": self.call_id,
+                "CSeq": f"{self.headers['CSeq'].split()[0]} {method}",
+            },
+        )
+
+    def cancel_request(self) -> bytes:
+        """Build the CANCEL for this INVITE."""
+        return self._transaction_request("CANCEL", self.headers["To"])
+
+    def failure_ack(self, response: dict[str, str]) -> bytes:
+        """Build the ACK for a non-2xx final response."""
+        return self._transaction_request("ACK", response.get("To"))
+
+
 # ============================================================
 # SIP Server Class
 # ============================================================
@@ -458,8 +507,17 @@ class MiniSIPServer:
         self.users = users  # username -> password
         self.registrations: dict[str, SIPRegistration] = {}
         self.challenges = {}
-        # Responses to our pending outgoing INVITEs, by call id.
-        self.pending_invites: dict[str, asyncio.Queue[dict[str, str]]] = {}
+        # Our outgoing INVITEs waiting for a final response, by call id.
+        self.pending_invites: dict[str, _OutgoingInvite] = {}
+        # INVITEs we gave up on, with the monotonic time until which late
+        # responses to them are still ACKed.
+        self._abandoned: dict[str, tuple[_OutgoingInvite, float]] = {}
+        # The ACK of each established outgoing call, resent with its 2xx.
+        self._sent_acks: dict[str, tuple[bytes, tuple[str, int]]] = {}
+        # BYE, INFO and CANCEL requests resent until a final response arrives.
+        self._unanswered: dict[tuple[str, int, str], asyncio.Event] = {}
+        # A call without received RTP for this long is hung up.
+        self.rtp_timeout = RTP_TIMEOUT
         # Incoming calls that are ringing, waiting for answer_call or reject_call.
         self.ringing: dict[str, _IncomingInvite] = {}
         # Accepted incoming calls waiting for the caller's ACK, by call id.
@@ -1033,7 +1091,31 @@ class MiniSIPServer:
             return None
         self.rtp_sessions[call_id] = session
         self._rtp_ports[call_id] = port
+        session.receive_timeout = self.rtp_timeout
+        session.on_timeout = lambda: self._on_rtp_timeout(call_id)
         return port
+
+    def _on_rtp_timeout(self, call_id: str) -> None:
+        """Hang up a call whose audio stopped, as the other side seems gone."""
+        if call_id not in self.active_calls:
+            return
+        log_sip_event("RTP_TIMEOUT", call_id=call_id, timeout=self.rtp_timeout)
+        self._spawn(
+            self._end_call(call_id, send_bye=True), name=f"sip-rtp-timeout-{call_id}"
+        )
+
+    async def _end_call(self, call_id: str, *, send_bye: bool) -> None:
+        """End an established call: hang up if asked, close its audio, report it."""
+        dialog = self.active_calls.pop(call_id, None)
+        if dialog is None:
+            return
+        if send_bye:
+            self._send_reliably(self._in_dialog_request(dialog, "BYE"), dialog.addr)
+            log_sip_event("BYE_SENT", addr=f"{dialog.addr}", call_id=call_id)
+        self._close_rtp(call_id)
+        self.last_cseq.pop(call_id, None)
+        self._sent_acks.pop(call_id, None)
+        await self._fire_event("on_call_ended", dialog)
 
     def _close_rtp(self, call_id: str) -> None:
         """Close the call's RTP session and free its port."""
@@ -1065,10 +1147,8 @@ class MiniSIPServer:
             self._stop_ack_wait(call_id)
             self._close_rtp(call_id)
             log_sip_event("CALL_ENDED_BEFORE_ACK", addr=f"{addr}", call_id=call_id)
-        elif call_id in self.active_calls:
-            dialog = self.active_calls.pop(call_id)
-            self._close_rtp(call_id)
-            await self._fire_event("on_call_ended", dialog)
+        else:
+            await self._end_call(call_id, send_bye=False)
 
     async def handle_cancel(self, message: dict[str, str], addr: (str, int)) -> None:
         """Handle CANCEL, sent when the caller gives up or another phone answered."""
@@ -1116,9 +1196,16 @@ class MiniSIPServer:
         target_addr: str,
         from_user: str,
         to_user: str,
-        timeout: int = 10,  # noqa: ASYNC109
+        timeout: float = 10,  # noqa: ASYNC109
+        ring_timeout: float = INVITE_RING_TIMEOUT,
     ) -> (str, dict[str, str]):
-        """Send a INVITE."""
+        """
+        Call `to_user` and return the call id and the 2xx once it is answered.
+
+        timeout: seconds to wait for the first response, while the INVITE is
+        resent. ring_timeout: seconds the call may ring after that before it is
+        cancelled. Returns (None, None) if the call fails or times out.
+        """
         if not from_user or not to_user:
             _msg = "from_user and to_user are required"
             raise ValueError(_msg)
@@ -1130,7 +1217,7 @@ class MiniSIPServer:
             return None, None
         try:
             return await self._send_invite(
-                call_id, port, target_addr, from_user, to_user, timeout
+                call_id, port, target_addr, from_user, to_user, timeout, ring_timeout
             )
         finally:
             if call_id not in self.active_calls:
@@ -1143,11 +1230,11 @@ class MiniSIPServer:
         target_addr: str,
         from_user: str,
         to_user: str,
-        timeout: int,  # noqa: ASYNC109
+        timeout: float,  # noqa: ASYNC109
+        ring_timeout: float,
     ) -> (str, dict[str, str]):
         sdp = build_sdp(self.call_host, rtp_port, [PCMA, PCMU])
         local = f"{self.sip_user_from(from_user)};tag={new_tag()}"
-        request_uri = f"sip:{at_address(to_user, target_addr[0])}"
         headers = {
             "Via": f"SIP/2.0/UDP {self.server_address()};branch={new_branch_id()}",
             "From": local,
@@ -1157,62 +1244,120 @@ class MiniSIPServer:
             "Contact": self._contact(local),
             "Content-Type": "application/sdp",
         }
+        invite = _OutgoingInvite(
+            request_uri=f"sip:{at_address(to_user, target_addr[0])}",
+            headers=headers,
+            addr=target_addr,
+        )
+        request = build_request("INVITE", invite.request_uri, headers=headers, body=sdp)
 
-        # Every response to the INVITE is queued, so none is lost when several
-        # arrive before this task runs again.
-        responses: asyncio.Queue[dict[str, str]] = asyncio.Queue()
-        self.pending_invites[call_id] = responses
+        # Every response is queued, so none is lost when several arrive before
+        # this task runs again.
+        self.pending_invites[call_id] = invite
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        interval = TIMER_T1
+        responded = False
         try:
-            self._send(
-                build_request("INVITE", request_uri, headers=headers, body=sdp),
-                target_addr,
-            )
+            self._send(request, target_addr)
             log_sip_event("INVITE_SENT", addr=f"{target_addr}", call_id=call_id)
 
             while True:
-                response = await asyncio.wait_for(responses.get(), timeout)
+                wait = deadline - loop.time()
+                if not responded:
+                    # Resend until the first response, as UDP may lose it.
+                    wait = min(wait, interval)
+                try:
+                    response = await asyncio.wait_for(
+                        invite.responses.get(), max(wait, 0)
+                    )
+                except TimeoutError:
+                    if not invite.responses.empty():
+                        continue  # a response arrived as the timer fired
+                    if loop.time() >= deadline:
+                        log_sip_event(
+                            "INVITE_TIMEOUT", addr=f"{target_addr}", call_id=call_id
+                        )
+                        return None, None
+                    self._send(request, target_addr)
+                    log_sip_event(
+                        "INVITE_RESENT", addr=f"{target_addr}", call_id=call_id
+                    )
+                    interval = min(interval * 2, TIMER_T2)
+                    continue
+
+                if response is None:  # the server stops
+                    return None, None
                 code = int(response[":start_line"].split()[1])
 
                 if code < STATUS_SUCCESS_RESPONSE:
+                    if not responded:
+                        responded = True
+                        deadline = loop.time() + ring_timeout
                     await self._outgoing_provisional(code, call_id, target_addr)
                     continue
 
+                invite.finished = True
                 if code < STATUS_REDIRECT_RESPONSE:
-                    await self._establish_outgoing(
-                        call_id, target_addr, local, response
-                    )
+                    await self._establish_outgoing(invite, response)
                     return call_id, response
 
-                # A final failure is ACKed within the INVITE transaction.
-                self._send(
-                    build_request(
-                        "ACK",
-                        request_uri,
-                        headers={
-                            "Via": headers["Via"],
-                            "From": local,
-                            "To": response.get("To"),
-                            "Call-ID": call_id,
-                            "CSeq": f"{headers['CSeq'].split()[0]} ACK",
-                        },
-                    ),
-                    target_addr,
-                )
-                if code == STATUS_BUSY:
-                    log_sip_event("BUSY", addr=f"{target_addr}", call_id=call_id)
-                    await self._fire_event("on_call_busy", call_id, target_addr)
-                else:
-                    log_sip_event(
-                        "CALL_FAILED", addr=f"{target_addr}", call_id=call_id, code=code
-                    )
-                    await self._fire_event("on_call_failed", call_id, target_addr, code)
+                await self._outgoing_failed(invite, response, code)
                 return None, None
-
-        except TimeoutError:
-            log_sip_event("INVITE_TIMEOUT", addr=f"{target_addr}", call_id=call_id)
-            return None, None
         finally:
             self.pending_invites.pop(call_id, None)
+            if not invite.finished:  # timed out or the calling task was cancelled
+                self._abandon(invite)
+
+    async def _outgoing_failed(
+        self, invite: _OutgoingInvite, response: dict[str, str], code: int
+    ) -> None:
+        """ACK a final failure to our INVITE and report it."""
+        call_id, target_addr = invite.call_id, invite.addr
+        self._send(invite.failure_ack(response), target_addr)
+        if code == STATUS_BUSY:
+            log_sip_event("BUSY", addr=f"{target_addr}", call_id=call_id)
+            await self._fire_event("on_call_busy", call_id, target_addr)
+        else:
+            log_sip_event(
+                "CALL_FAILED", addr=f"{target_addr}", call_id=call_id, code=code
+            )
+            await self._fire_event("on_call_failed", call_id, target_addr, code)
+
+    def _abandon(self, invite: _OutgoingInvite) -> None:
+        """Give up on an INVITE: cancel it if it rings and watch for late answers."""
+        invite.finished = True
+        if invite.provisional:
+            self._send_reliably(invite.cancel_request(), invite.addr)
+            log_sip_event("CANCEL_SENT", addr=f"{invite.addr}", call_id=invite.call_id)
+        now = time.monotonic()
+        self._abandoned = {
+            call_id: entry
+            for call_id, entry in self._abandoned.items()
+            if entry[1] > now
+        }
+        self._abandoned[invite.call_id] = (invite, now + 64 * TIMER_T1)
+
+    def _answer_abandoned(
+        self, invite: _OutgoingInvite, response: dict[str, str], code: int
+    ) -> None:
+        """ACK a final response to an INVITE we gave up on; hang up if answered."""
+        if code < STATUS_SUCCESS_RESPONSE:
+            return
+        if code >= STATUS_REDIRECT_RESPONSE:  # usually 487 for our CANCEL
+            self._send(invite.failure_ack(response), invite.addr)
+            return
+        if invite.ack is not None:  # a retransmitted 2xx
+            self._send(invite.ack, invite.addr)
+            return
+        dialog = self._outgoing_dialog(invite, response)
+        invite.ack = self._ack_2xx(dialog, response)
+        self._send(invite.ack, invite.addr)
+        self._send_reliably(self._in_dialog_request(dialog, "BYE"), invite.addr)
+        self.last_cseq.pop(invite.call_id, None)
+        log_sip_event(
+            "LATE_ANSWER_HUNG_UP", addr=f"{invite.addr}", call_id=invite.call_id
+        )
 
     async def _outgoing_provisional(
         self, code: int, call_id: str, target_addr: tuple[str, int]
@@ -1229,46 +1374,50 @@ class MiniSIPServer:
                 "PROVISIONAL", addr=f"{target_addr}", call_id=call_id, code=code
             )
 
-    async def _establish_outgoing(
-        self,
-        call_id: str,
-        target_addr: tuple[str, int],
-        local: str,
-        response: dict[str, str],
-    ) -> None:
-        """ACK the 2xx to our INVITE and start the call."""
-        log_sip_event("CONNECTED", addr=f"{target_addr}", call_id=call_id)
-        media = self.parse_sdp_media(response.get(":body")) or {}
-        dialog = SIPDialog(
-            call_id=call_id,
+    def _outgoing_dialog(
+        self, invite: _OutgoingInvite, response: dict[str, str]
+    ) -> SIPDialog:
+        """Return the dialog a 2xx to our INVITE establishes."""
+        return SIPDialog(
+            call_id=invite.call_id,
             direction="outgoing",
-            addr=target_addr,
-            local=local,
+            addr=invite.addr,
+            local=invite.headers["From"],
             remote=response.get("To"),
             remote_target=header_uri(response.get("Contact"))
             or header_uri(response.get("To")),
-            media=media,
+            media=self.parse_sdp_media(response.get(":body")) or {},
         )
+
+    def _ack_2xx(self, dialog: SIPDialog, response: dict[str, str]) -> bytes:
+        """Build the ACK for a 2xx to our INVITE, sent within the dialog."""
         cseq_num, _ = self.parse_cseq(response.get("CSeq"))
-        self._send(
-            build_request(
-                "ACK",
-                dialog.remote_target,
-                headers={
-                    "Via": (
-                        f"SIP/2.0/UDP {self.server_address()};branch={new_branch_id()}"
-                    ),
-                    "From": dialog.local,
-                    "To": dialog.remote,
-                    "Call-ID": call_id,
-                    "CSeq": f"{cseq_num} ACK",
-                    "Contact": self._contact(dialog.local),
-                },
-            ),
-            target_addr,
+        return build_request(
+            "ACK",
+            dialog.remote_target,
+            headers={
+                "Via": f"SIP/2.0/UDP {self.server_address()};branch={new_branch_id()}",
+                "From": dialog.local,
+                "To": dialog.remote,
+                "Call-ID": dialog.call_id,
+                "CSeq": f"{cseq_num} ACK",
+                "Contact": self._contact(dialog.local),
+            },
         )
+
+    async def _establish_outgoing(
+        self, invite: _OutgoingInvite, response: dict[str, str]
+    ) -> None:
+        """ACK the 2xx to our INVITE and start the call."""
+        call_id, target_addr = invite.call_id, invite.addr
+        log_sip_event("CONNECTED", addr=f"{target_addr}", call_id=call_id)
+        dialog = self._outgoing_dialog(invite, response)
+        ack = self._ack_2xx(dialog, response)
+        self._send(ack, target_addr)
+        self._sent_acks[call_id] = (ack, target_addr)
         log_sip_event("ACK_SENT", addr=f"{target_addr}", call_id=call_id)
 
+        media = dialog.media
         session = self.rtp_sessions[call_id]
         if media.get("payload_type") in CODEC_NAMES:
             session.payload_type = media["payload_type"]
@@ -1307,7 +1456,7 @@ class MiniSIPServer:
             {"Content-Type": "application/dtmf-relay"},
             body=f"Signal={signal}\r\nDuration={duration}",
         )
-        self._send(data, addr)
+        self._send_reliably(data, addr)
         log_sip_event("INFO_SENT", addr=f"{addr}", call_id=call_id, request=data)
 
     async def send_bye(self, call_id: str) -> None:
@@ -1316,21 +1465,61 @@ class MiniSIPServer:
             _msg = f"There is currently no active call with call id: {call_id}"
             raise ValueError(_msg)
 
-        dialog = self.active_calls[call_id]
-        addr = dialog.addr
-        self._send(self._in_dialog_request(dialog, "BYE"), addr)
-        log_sip_event("BYE_SENT", addr=f"{addr}", call_id=call_id)
-        self.active_calls.pop(call_id)
-        self._close_rtp(call_id)
-        await self._fire_event("on_call_ended", dialog)
+        await self._end_call(call_id, send_bye=True)
+
+    def _send_reliably(self, request: bytes, addr: tuple[str, int]) -> None:
+        """Send a BYE, INFO or CANCEL and resend it until a final response."""
+        _, message = parse_sip_message(request)
+        cseq_num, method = self.parse_cseq(message["CSeq"])
+        key = (message["Call-ID"], cseq_num, method)
+        answered = self._unanswered[key] = asyncio.Event()
+        self._send(request, addr)
+        self._spawn(
+            self._resend_until_answered(request, addr, key, answered),
+            name=f"sip-resend-{method}-{key[0]}",
+        )
+
+    async def _resend_until_answered(
+        self,
+        request: bytes,
+        addr: tuple[str, int],
+        key: tuple[str, int, str],
+        answered: asyncio.Event,
+    ) -> None:
+        """Resend from T1, doubling up to T2, for at most 64 * T1 (RFC 3261 17.1.2)."""
+        interval, waited = TIMER_T1, 0.0
+        try:
+            while True:
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(answered.wait(), interval)
+                if answered.is_set():  # also when it arrived as the timer fired
+                    return
+                waited += interval
+                if waited >= 64 * TIMER_T1:
+                    log_sip_event("REQUEST_TIMEOUT", call_id=key[0], method=key[2])
+                    return
+                self._send(request, addr)
+                log_sip_event("REQUEST_RESENT", call_id=key[0], method=key[2])
+                interval = min(interval * 2, TIMER_T2)
+        finally:
+            if self._unanswered.get(key) is answered:
+                del self._unanswered[key]
+
+    def _spawn(self, coro: Coroutine[Any, Any, None], name: str) -> asyncio.Task:
+        """Run `coro` in a task that stop() cancels; its errors are logged."""
+        task = asyncio.create_task(coro, name=name)
+        self._tasks.add(task)
+        task.add_done_callback(self._task_done)
+        return task
+
+    def _task_done(self, task: asyncio.Task) -> None:
+        self._tasks.discard(task)
+        if not task.cancelled() and (exc := task.exception()) is not None:
+            logger.error("SIP task %s failed", task.get_name(), exc_info=exc)
 
     def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:
         """Handle a datagram in a task that stop() can cancel."""
-        task = asyncio.create_task(
-            self.handle_datagram(data, addr), name="sip-datagram"
-        )
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+        self._spawn(self.handle_datagram(data, addr), name="sip-datagram")
 
     async def handle_datagram(self, data: bytes, addr: (str, int)) -> None:
         """Handle a raw UDP datagram."""
@@ -1354,12 +1543,8 @@ class MiniSIPServer:
 
         log_sip_event(method, addr=f"{addr}", message=message)
 
-        # Queue responses to our INVITEs for the task waiting in _send_invite.
         if message[":start_line"].startswith("SIP/2.0"):
-            _, cseq_method = self.parse_cseq(message.get("CSeq"))
-            responses = self.pending_invites.get(message.get("Call-ID"))
-            if responses is not None and cseq_method == "INVITE":
-                responses.put_nowait(message)
+            self._handle_response(message)
             return
 
         if missing := [name for name in REQUIRED_HEADERS if not message.get(name)]:
@@ -1381,6 +1566,33 @@ class MiniSIPServer:
             self._send(build_response(501, "Not Implemented", message), addr)
             return
         await handler(message, addr)
+
+    def _handle_response(self, message: dict[str, str]) -> None:
+        """Route a response to the request it answers."""
+        call_id = message.get("Call-ID")
+        cseq_num, method = self.parse_cseq(message.get("CSeq"))
+        code = int(message[":start_line"].split()[1])
+
+        if method != "INVITE":
+            # A final response ends the resending of a BYE, INFO or CANCEL.
+            answered = self._unanswered.get((call_id, cseq_num, method))
+            if answered is not None and code >= STATUS_SUCCESS_RESPONSE:
+                answered.set()
+            return
+
+        if (invite := self.pending_invites.get(call_id)) is not None:
+            if code < STATUS_SUCCESS_RESPONSE:
+                invite.provisional = True
+            invite.responses.put_nowait(message)
+        elif (sent_ack := self._sent_acks.get(call_id)) is not None:
+            # The 2xx is resent because our ACK got lost: ACK it again.
+            if STATUS_SUCCESS_RESPONSE <= code < STATUS_REDIRECT_RESPONSE:
+                self._send(*sent_ack)
+                log_sip_event("ACK_RESENT", addr=f"{sent_ack[1]}", call_id=call_id)
+        elif (abandoned := self._abandoned.get(call_id)) is not None:
+            invite, expires = abandoned
+            if time.monotonic() < expires:
+                self._answer_abandoned(invite, message, code)
 
     async def start(self) -> None:
         """Start the MiniSIP Server."""
@@ -1410,13 +1622,29 @@ class MiniSIPServer:
                 await self._cleanup_task
             self._cleanup_task = None
 
+        # Reject ringing calls, hang up established ones and give up on our
+        # INVITEs. The resend tasks are cancelled below, so each is sent once.
+        for invite in self.ringing.values():
+            self._send(build_response(486, "Busy Here", invite.message), invite.addr)
+        self.ringing.clear()
         for task in self._ack_waits.values():
             task.cancel()
         self._ack_waits.clear()
-        handlers = [task for task in self._tasks if task is not asyncio.current_task()]
-        for task in handlers:
+        for call_id in list(self.pending_acks):
+            self._close_rtp(call_id)
+        self.pending_acks.clear()
+        for call_id in list(self.active_calls):
+            await self._end_call(call_id, send_bye=True)
+        for invite in list(self.pending_invites.values()):
+            self._abandon(invite)
+            invite.responses.put_nowait(None)
+
+        tasks = [task for task in self._tasks if task is not asyncio.current_task()]
+        for task in tasks:
             task.cancel()
-        await asyncio.gather(*handlers, return_exceptions=True)
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self._abandoned.clear()
+        self._unanswered.clear()
         for call_id in list(self.rtp_sessions):
             self._close_rtp(call_id)
 

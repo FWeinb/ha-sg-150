@@ -525,24 +525,23 @@ class MiniSIPSenderTests(unittest.IsolatedAsyncioTestCase):
     async def test_responses_from_an_unknown_address_are_dropped(self) -> None:
         """A forged response cannot answer our pending INVITE."""
         await register(self.server)
-        responses = asyncio.Queue()
-        self.server.pending_invites["out-1"] = responses
-        response = sip(
-            "SIP/2.0 200 OK",
-            {
-                "Via": f"SIP/2.0/UDP {HA_HOST}:5060;branch=z1",
-                "From": f"<sip:{HA_NUMBER}@{HA_HOST}>",
-                "To": f"<sip:*111@{GATEWAY[0]}>;tag=gw",
-                "Call-ID": "out-1",
-                "CSeq": "1 INVITE",
-            },
+        self.server.transport.sent.clear()
+        task = asyncio.create_task(
+            self.server.send_invite(GATEWAY, HA_NUMBER, "*111", timeout=1)
         )
+        await asyncio.sleep(0)
+        call_id = _header(self._sent()[0], "Call-ID")
 
-        await self.server.handle_datagram(response, STRANGER)
-        assert responses.empty()
+        await self.server.handle_datagram(
+            invite_response("SIP/2.0 200 OK", call_id), STRANGER
+        )
+        await asyncio.sleep(0)
+        assert not task.done()
 
-        await self.server.handle_datagram(response, GATEWAY)
-        assert responses.qsize() == 1
+        await self.server.handle_datagram(
+            invite_response("SIP/2.0 200 OK", call_id), GATEWAY
+        )
+        assert (await task)[0] == call_id
 
     async def test_keepalives_and_garbage_get_no_reply(self) -> None:
         """Only SIP requests and responses are handled; nothing else is answered."""
@@ -650,8 +649,19 @@ def _header(message: str, name: str) -> str:
     return re.search(rf"\r\n{name}: ([^\r]*)", message).group(1)
 
 
-class MiniSIPDialogTests(unittest.IsolatedAsyncioTestCase):
-    """Response handling and the requests we send within a call."""
+def _response_to(request: str, status: str, *, to_tag: str | None = None) -> bytes:
+    """Build the gateway's response to one of our requests."""
+    headers = {
+        name: _header(request, name)
+        for name in ("Via", "From", "To", "Call-ID", "CSeq")
+    }
+    if to_tag:
+        headers["To"] += f";tag={to_tag}"
+    return sip(status, headers)
+
+
+class _MiniSIPCallTestCase(unittest.IsolatedAsyncioTestCase):
+    """A server on a non-default port with helpers for calls through it."""
 
     def setUp(self) -> None:
         """Create a server on a non-default port that trusts the gateway."""
@@ -671,14 +681,30 @@ class MiniSIPDialogTests(unittest.IsolatedAsyncioTestCase):
     def _requests(self, method: str) -> list[str]:
         return [m for m in self._sent() if m.startswith(f"{method} ")]
 
-    async def _dial(self, give_up_after: float = 1) -> tuple[asyncio.Task, str]:
+    async def _dial(
+        self, give_up_after: float = 1, ring_for: float = 1
+    ) -> tuple[asyncio.Task, str]:
         """Start an outgoing call to the front door and return its call id."""
         task = asyncio.create_task(
-            self.server.send_invite(GATEWAY, HA_NUMBER, "*111", timeout=give_up_after)
+            self.server.send_invite(
+                GATEWAY,
+                HA_NUMBER,
+                "*111",
+                timeout=give_up_after,
+                ring_timeout=ring_for,
+            )
         )
         while not self._requests("INVITE"):  # noqa: ASYNC110
             await asyncio.sleep(0)
         return task, _header(self._requests("INVITE")[0], "Call-ID")
+
+    async def _answer_incoming(self, call_id: str) -> None:
+        await self.server.handle_datagram(invite(call_id, "*111", HA_NUMBER), GATEWAY)
+        await self.server.handle_datagram(ack(call_id), GATEWAY)
+
+
+class MiniSIPDialogTests(_MiniSIPCallTestCase):
+    """Response handling and the requests we send within a call."""
 
     async def test_responses_arriving_together_establish_the_call(self) -> None:
         """A 180 directly followed by a 200 must not lose the 200."""
@@ -809,6 +835,223 @@ class MiniSIPDialogTests(unittest.IsolatedAsyncioTestCase):
         await self.server.handle_datagram(ack("c1"), GATEWAY)
 
         assert self.server.active_calls["c1"].remote_target == f"sip:*111@{GATEWAY[0]}"
+
+
+class MiniSIPLossTests(_MiniSIPCallTestCase):
+    """Timeouts and resending, with RFC 3261 timers shortened to 10 ms."""
+
+    def setUp(self) -> None:
+        """Shorten T1 and T2 and record ended calls."""
+        super().setUp()
+        self.enterContext(patch.multiple(minisip, TIMER_T1=0.01, TIMER_T2=0.02))
+        self.ended: list[str] = []
+
+        async def on_ended(dialog: SIPDialog) -> None:
+            self.ended.append(dialog.call_id)
+
+        self.server.add_listener("on_call_ended", on_ended)
+
+    async def test_lost_bye_is_resent_until_answered(self) -> None:
+        """The call ends at once; the BYE is resent until its 200 OK arrives."""
+        await self._answer_incoming("c1")
+
+        await self.server.send_bye("c1")
+        assert self.ended == ["c1"]
+        await asyncio.sleep(0.05)
+        byes = self._requests("BYE")
+        assert len(byes) >= 3
+        assert len(set(byes)) == 1
+
+        await self.server.handle_datagram(
+            _response_to(byes[0], "SIP/2.0 200 OK"), GATEWAY
+        )
+        await asyncio.sleep(0.05)
+        assert len(self._requests("BYE")) == len(byes)
+
+    async def test_unanswered_bye_gives_up_after_64_t1(self) -> None:
+        """Resending stops after 64 * T1 without a response."""
+        with patch.multiple(minisip, TIMER_T1=0.001, TIMER_T2=0.004):
+            await self._answer_incoming("c1")
+            await self.server.send_bye("c1")
+            await asyncio.sleep(0.2)
+            sent = len(self._requests("BYE"))
+            await asyncio.sleep(0.05)
+
+        assert len(self._requests("BYE")) == sent
+        assert not self.server._unanswered  # noqa: SLF001
+        assert not self.server._tasks  # noqa: SLF001
+
+    async def test_info_is_resent_until_answered(self) -> None:
+        """A DTMF INFO is resent like a BYE."""
+        await self._answer_incoming("c1")
+
+        await self.server.send_sip_info_dtmf("c1", "1", "250")
+        await asyncio.sleep(0.05)
+        infos = self._requests("INFO")
+        await self.server.handle_datagram(
+            _response_to(infos[0], "SIP/2.0 200 OK"), GATEWAY
+        )
+        await asyncio.sleep(0.05)
+
+        assert len(infos) >= 2
+        assert len(self._requests("INFO")) == len(infos)
+        assert "c1" in self.server.active_calls
+
+    async def test_silent_call_is_hung_up(self) -> None:
+        """No RTP for rtp_timeout seconds ends the call with a BYE."""
+        self.server.rtp_timeout = 0.05
+        await self._answer_incoming("c1")
+
+        await asyncio.sleep(0.15)
+
+        assert self.ended == ["c1"]
+        assert len(set(self._requests("BYE"))) == 1
+        assert not self.server.rtp_sessions
+
+    async def test_invite_is_resent_until_the_first_response(self) -> None:
+        """The INVITE is resent from T1 until any response arrives."""
+        task, call_id = await self._dial()
+        await asyncio.sleep(0.05)
+        invites = self._requests("INVITE")
+        assert len(invites) >= 3
+        assert len(set(invites)) == 1
+
+        await self.server.handle_datagram(
+            invite_response("SIP/2.0 100 Trying", call_id), GATEWAY
+        )
+        await asyncio.sleep(0.05)
+        assert len(self._requests("INVITE")) == len(invites)
+
+        task.cancel()
+
+    async def test_unanswered_invite_gives_up_without_cancel(self) -> None:
+        """Without any response there is nothing to cancel."""
+        task, _ = await self._dial(give_up_after=0.05)
+
+        assert await task == (None, None)
+        assert not self._requests("CANCEL")
+        assert not self.server.rtp_sessions
+
+    async def test_long_ringing_call_can_still_be_answered(self) -> None:
+        """After 180 the ring timeout applies, not the first-response timeout."""
+        task, call_id = await self._dial(give_up_after=0.03, ring_for=1)
+        await self.server.handle_datagram(
+            invite_response("SIP/2.0 180 Ringing", call_id), GATEWAY
+        )
+        await asyncio.sleep(0.06)
+
+        await self.server.handle_datagram(
+            invite_response("SIP/2.0 200 OK", call_id), GATEWAY
+        )
+
+        assert (await task)[0] == call_id
+
+    async def test_ring_timeout_cancels_the_invite_and_acks_the_487(self) -> None:
+        """A call nobody answers is cancelled; the 487 that follows is ACKed."""
+        task, call_id = await self._dial(ring_for=0.03)
+        await self.server.handle_datagram(
+            invite_response("SIP/2.0 180 Ringing", call_id), GATEWAY
+        )
+
+        assert await task == (None, None)
+        invite_request = self._requests("INVITE")[0]
+        cancel_request = self._requests("CANCEL")[0]
+        assert cancel_request.startswith(f"CANCEL sip:*111@{GATEWAY[0]} SIP/2.0\r\n")
+        for name in ("Via", "From", "To", "Call-ID"):
+            assert _header(cancel_request, name) == _header(invite_request, name)
+        assert _header(cancel_request, "CSeq") == "1 CANCEL"
+
+        await self.server.handle_datagram(
+            _response_to(cancel_request, "SIP/2.0 200 OK"), GATEWAY
+        )
+        await self.server.handle_datagram(
+            invite_response("SIP/2.0 487 Request Terminated", call_id), GATEWAY
+        )
+        await asyncio.sleep(0.05)
+
+        cancels = len(self._requests("CANCEL"))
+        (ack_request,) = self._requests("ACK")
+        assert _header(ack_request, "Via") == _header(invite_request, "Via")
+        assert _header(ack_request, "CSeq") == "1 ACK"
+        await asyncio.sleep(0.05)
+        assert len(self._requests("CANCEL")) == cancels
+
+    async def test_cancelled_dial_sends_cancel(self) -> None:
+        """Cancelling the calling task while it rings cancels the INVITE."""
+        task, call_id = await self._dial()
+        await self.server.handle_datagram(
+            invite_response("SIP/2.0 180 Ringing", call_id), GATEWAY
+        )
+
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+        assert len(self._requests("CANCEL")) == 1
+
+    async def test_late_answer_is_acked_and_hung_up(self) -> None:
+        """A 200 OK after we gave up gets an ACK and a BYE, and no call."""
+        task, call_id = await self._dial(ring_for=0.01)
+        await self.server.handle_datagram(
+            invite_response("SIP/2.0 180 Ringing", call_id), GATEWAY
+        )
+        await task
+
+        for _ in range(2):  # the second 200 OK is a retransmission
+            await self.server.handle_datagram(
+                invite_response("SIP/2.0 200 OK", call_id), GATEWAY
+            )
+
+        acks = self._requests("ACK")
+        assert len(acks) == 2
+        assert acks[0] == acks[1]
+        assert len(set(self._requests("BYE"))) == 1
+        assert call_id not in self.server.active_calls
+        assert not self.ended
+
+    async def test_retransmitted_2xx_is_acked_again(self) -> None:
+        """If our ACK got lost, the gateway resends the 200 OK: ACK it again."""
+        task, call_id = await self._dial()
+        await self.server.handle_datagram(
+            invite_response("SIP/2.0 200 OK", call_id), GATEWAY
+        )
+        await task
+
+        await self.server.handle_datagram(
+            invite_response("SIP/2.0 200 OK", call_id), GATEWAY
+        )
+
+        acks = self._requests("ACK")
+        assert len(acks) == 2
+        assert acks[0] == acks[1]
+
+    async def test_stop_rejects_hangs_up_and_cancels(self) -> None:
+        """stop() rejects ringing calls, ends active ones and cancels our INVITEs."""
+
+        async def ring(_: CallContext) -> IncomingCallDecision:
+            return IncomingCallDecision.RING
+
+        await self._answer_incoming("active")
+        self.server.add_listener("on_incoming_call", ring)
+        await self.server.handle_datagram(invite("ringing", "*111", HA_NUMBER), GATEWAY)
+        task, call_id = await self._dial()
+        await self.server.handle_datagram(
+            invite_response("SIP/2.0 180 Ringing", call_id), GATEWAY
+        )
+        transport = self.server.transport
+
+        await self.server.stop()
+
+        sent = [data.decode() for data, _ in transport.sent]
+        assert any(
+            m.startswith("SIP/2.0 486 ") and "Call-ID: ringing\r\n" in m for m in sent
+        )
+        assert sum(m.startswith("BYE ") for m in sent) == 1
+        assert sum(m.startswith("CANCEL ") for m in sent) == 1
+        assert self.ended == ["active"]
+        assert await task == (None, None)
+        assert not self.server.rtp_sessions
+        assert not self.server._tasks  # noqa: SLF001
 
 
 if __name__ == "__main__":
