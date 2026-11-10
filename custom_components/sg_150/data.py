@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 @dataclass
 class SG150RuntimeData:
-    """Data for the Blueprint integration."""
+    """Runtime data of an SG-150 config entry."""
 
     line: GatewayLine
     client: SG150ApiClient

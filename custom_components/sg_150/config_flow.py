@@ -1,4 +1,4 @@
-"""Adds config flow for Blueprint."""
+"""Config and options flows for the SG-150."""
 
 from __future__ import annotations
 
@@ -50,7 +50,7 @@ if TYPE_CHECKING:
 
 
 class SG150FlowHandler(config_entries.ConfigFlow, domain=DOMAIN):  # pylint: disable=abstract-method
-    """Config flow for Blueprint."""
+    """Config flow for an SG-150 gateway."""
 
     VERSION = 1
 
@@ -63,7 +63,7 @@ class SG150FlowHandler(config_entries.ConfigFlow, domain=DOMAIN):  # pylint: dis
     @callback
     def async_get_options_flow(
         _: config_entries.ConfigEntry,
-    ) -> SG150FlowHandler:
+    ) -> SG150OptionsFlowHandler:
         """Get the options flow for this handler."""
         return SG150OptionsFlowHandler()
 

@@ -1,4 +1,4 @@
-"""BlueprintEntity class."""
+"""Binary sensor for the gateway's SIP registration."""
 
 from __future__ import annotations
 

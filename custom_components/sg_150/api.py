@@ -1,4 +1,4 @@
-"""Sample API Client."""
+"""Client for the SG-150 HTTP API."""
 
 from __future__ import annotations
 
@@ -62,7 +62,7 @@ def _validate[T: BaseModel](model: type[T], response: Any, what: str) -> T:
 
 
 class SG150ApiClient:
-    """Sample API Client."""
+    """Client for the SG-150 HTTP API."""
 
     def __init__(
         self,
@@ -72,7 +72,7 @@ class SG150ApiClient:
         password: str,
         session: aiohttp.ClientSession,
     ) -> None:
-        """Sample API Client."""
+        """Create a client for the gateway at host_address."""
         self._access_token = None
         self._username = username
         self._password = password
