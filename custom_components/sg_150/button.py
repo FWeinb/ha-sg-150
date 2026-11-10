@@ -6,12 +6,19 @@ import contextlib
 from typing import TYPE_CHECKING
 
 from homeassistant.components.button import ButtonEntity
-from homeassistant.exceptions import ServiceValidationError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
+from .api import SG150ApiClientError
 from .const import DOMAIN
-from .entity import SG150DeviceEntity, SG150GatewayEntity
+from .entity import (
+    SG150DeviceEntity,
+    SG150GatewayEntity,
+    async_add_device_entities,
+)
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable
+
     from homeassistant.core import HomeAssistant
     from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -28,23 +35,34 @@ async def async_setup_entry(
 ) -> None:
     """Set up the button platform."""
     coordinator = entry.runtime_data.coordinator
-    devices = coordinator.data.devices
-    async_add_entities(
-        [LightSwitchButton(coordinator=coordinator)]
-        + [
-            DoorOpenerButton(coordinator=coordinator, device=device)
-            for device in devices
-            if device.is_door
-        ]
+    async_add_entities([LightSwitchButton(coordinator=coordinator)])
+
+    def create(device: SG150Device) -> list[ButtonEntity]:
+        buttons: list[ButtonEntity] = []
+        if device.is_door:
+            buttons.append(DoorOpenerButton(coordinator=coordinator, device=device))
         # Next to the camera, whose live view talks on the same calls.
-        + [
-            HangUpButton(
-                coordinator=coordinator, device=device, line=entry.runtime_data.line
+        if device.mjpeg_stream_url is not None:
+            buttons.append(
+                HangUpButton(
+                    coordinator=coordinator, device=device, line=entry.runtime_data.line
+                )
             )
-            for device in devices
-            if device.mjpeg_stream_url is not None
-        ]
-    )
+        return buttons
+
+    async_add_device_entities(entry, async_add_entities, create)
+
+
+async def _gateway_request(request: Awaitable[None]) -> None:
+    """Await a gateway request, turning its errors into HomeAssistantError."""
+    try:
+        await request
+    except SG150ApiClientError as err:
+        raise HomeAssistantError(
+            translation_domain=DOMAIN,
+            translation_key="gateway_request_failed",
+            translation_placeholders={"error": str(err)},
+        ) from err
 
 
 class DoorOpenerButton(SG150DeviceEntity, ButtonEntity):
@@ -62,11 +80,13 @@ class DoorOpenerButton(SG150DeviceEntity, ButtonEntity):
 
     async def async_press(self) -> None:
         """Handle the button press."""
-        phone_endpoint = self.get_device().phone_endpoint
-        if phone_endpoint is None:
+        device = self.get_device()
+        if device is None or device.phone_endpoint is None:
             return
-        await self.coordinator.get_api_client().async_trigger_door_opener(
-            phone_endpoint.callNumber.dialable
+        await _gateway_request(
+            self.coordinator.get_api_client().async_trigger_door_opener(
+                device.phone_endpoint.callNumber.dialable
+            )
         )
 
 
@@ -113,4 +133,6 @@ class LightSwitchButton(SG150GatewayEntity, ButtonEntity):
 
     async def async_press(self) -> None:
         """Handle the button press."""
-        await self.coordinator.get_api_client().async_trigger_light_switch()
+        await _gateway_request(
+            self.coordinator.get_api_client().async_trigger_light_switch()
+        )

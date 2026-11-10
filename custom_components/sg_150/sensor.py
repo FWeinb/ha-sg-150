@@ -9,7 +9,11 @@ from homeassistant.const import (
     EntityCategory,
 )
 
-from .entity import SG150DeviceEntity, SG150GatewayEntity
+from .entity import (
+    SG150DeviceEntity,
+    SG150GatewayEntity,
+    async_add_device_entities,
+)
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -26,29 +30,18 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the sensor platform."""
-    entites = [MacAddressSensor(coordinator=entry.runtime_data.coordinator)]
+    coordinator = entry.runtime_data.coordinator
+    async_add_entities([MacAddressSensor(coordinator=coordinator)])
 
-    for device in entry.runtime_data.coordinator.data.devices:
+    def create(device: SG150Device) -> list[SensorEntity]:
+        sensors: list[SensorEntity] = []
         if device.is_door:
-            entites.extend(
-                [
-                    DoorTypeSensor(
-                        coordinator=entry.runtime_data.coordinator,
-                        device=device,
-                    )
-                ]
-            )
+            sensors.append(DoorTypeSensor(coordinator=coordinator, device=device))
         if device.phone_endpoint is not None:
-            entites.extend(
-                [
-                    PhoneNumber(
-                        coordinator=entry.runtime_data.coordinator,
-                        device=device,
-                    )
-                ]
-            )
+            sensors.append(PhoneNumber(coordinator=coordinator, device=device))
+        return sensors
 
-    async_add_entities(entites)
+    async_add_device_entities(entry, async_add_entities, create)
 
 
 class DoorTypeSensor(SG150DeviceEntity, SensorEntity):
@@ -64,7 +57,8 @@ class DoorTypeSensor(SG150DeviceEntity, SensorEntity):
     @property
     def native_value(self) -> str | None:
         """Return the native value of the sensor."""
-        in_home = self.get_device().in_home
+        device = self.get_device()
+        in_home = device.in_home if device else None
         return in_home.deviceType if in_home else None
 
 
@@ -81,7 +75,8 @@ class PhoneNumber(SG150DeviceEntity, SensorEntity):
     @property
     def native_value(self) -> str | None:
         """Return the native value of the sensor."""
-        phone_endpoint = self.get_device().phone_endpoint
+        device = self.get_device()
+        phone_endpoint = device.phone_endpoint if device else None
         return phone_endpoint.callNumber.display if phone_endpoint else None
 
 

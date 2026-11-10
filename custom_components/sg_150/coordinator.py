@@ -28,10 +28,9 @@ class SG150Data:
 
     devices: list[SG150Device]
 
-    def by_id(self, _id: str) -> SG150Device:
-        """Get device by id."""
-        LOGGER.debug("Get device by id %s", _id)
-        return next(device for device in self.devices if device.id == _id)
+    def by_id(self, _id: str) -> SG150Device | None:
+        """Get device by id, or None if the gateway no longer reports it."""
+        return next((device for device in self.devices if device.id == _id), None)
 
 
 class SG150Coordinator(DataUpdateCoordinator):
@@ -43,15 +42,15 @@ class SG150Coordinator(DataUpdateCoordinator):
 
     data: SG150Data
 
-    def __init__(self, hass: HomeAssistant) -> None:
+    def __init__(self, hass: HomeAssistant, config_entry: SG150ConfigEntry) -> None:
         """Initialize coordinator."""
         super().__init__(
             hass=hass,
             logger=LOGGER,
             name=DOMAIN,
+            config_entry=config_entry,
             update_interval=timedelta(seconds=30),
         )
-        self.previous_devices: set[str] = set()
 
     def get_gateway_identifier(self) -> tuple[str, str]:
         """Get the identifier of the gateway device in the device registry."""
@@ -91,24 +90,36 @@ class SG150Coordinator(DataUpdateCoordinator):
         """Update data via library."""
         try:
             data = await self.get_api_client().async_get_in_home_callable()
-
-            current_devices = {device.id for device in data.devices}
-            if stale_devices := self.previous_devices - current_devices:
-                device_registry = dr.async_get(self.hass)
-                for device_id in stale_devices:
-                    device = device_registry.async_get_device(
-                        identifiers={(DOMAIN, device_id)}
-                    )
-                    if device:
-                        device_registry.async_update_device(
-                            device_id=device.id,
-                            remove_config_entry_id=self.config_entry.entry_id,
-                        )
-
-            self.previous_devices = current_devices
-
-            return SG150Data(data.devices)
         except SG150ApiClientAuthenticationError as exception:
             raise ConfigEntryAuthFailed(exception) from exception
         except SG150ApiClientError as exception:
             raise UpdateFailed(exception) from exception
+
+        # An empty reply may be transient; it must not wipe every device.
+        if data.devices:
+            self._remove_stale_devices({device.id for device in data.devices})
+        return SG150Data(data.devices)
+
+    def _remove_stale_devices(self, current: set[str]) -> None:
+        """
+        Detach registry devices the gateway no longer reports.
+
+        The registry is compared rather than the previous reply, so devices
+        removed while Home Assistant was not running are detached as well.
+        """
+        device_registry = dr.async_get(self.hass)
+        gateway = self.get_gateway_identifier()
+        for device in dr.async_entries_for_config_entry(
+            device_registry, self.config_entry.entry_id
+        ):
+            ids = {
+                identifier
+                for domain, identifier in device.identifiers
+                if domain == DOMAIN and (domain, identifier) != gateway
+            }
+            if ids and not ids & current:
+                LOGGER.info("Removing device %s, the gateway removed it", device.name)
+                device_registry.async_update_device(
+                    device_id=device.id,
+                    remove_config_entry_id=self.config_entry.entry_id,
+                )

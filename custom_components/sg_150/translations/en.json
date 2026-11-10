@@ -243,6 +243,9 @@
     "exceptions": {
         "no_call_to_hang_up": {
             "message": "There is no call to hang up"
+        },
+        "gateway_request_failed": {
+            "message": "The gateway request failed: {error}"
         }
     }
 }

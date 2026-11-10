@@ -11,7 +11,7 @@ from homeassistant.components.event import (
 )
 
 from .const import LOGGER
-from .entity import SG150DeviceEntity
+from .entity import SG150DeviceEntity, async_add_device_entities
 from .line import IncomingCall
 
 if TYPE_CHECKING:
@@ -30,20 +30,20 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the binary_sensor platform."""
-    if entry.runtime_data.coordinator.data is None:
-        LOGGER.warning("Coordinator data is None, skipping binary_sensor setup")
-        return
-
-    async_add_entities(
-        [
-            SG150RingingEvent(
-                coordinator=entry.runtime_data.coordinator,
-                device=device,
-                line=entry.runtime_data.line,
-            )
-            for device in entry.runtime_data.coordinator.data.devices
+    async_add_device_entities(
+        entry,
+        async_add_entities,
+        lambda device: (
+            [
+                SG150RingingEvent(
+                    coordinator=entry.runtime_data.coordinator,
+                    device=device,
+                    line=entry.runtime_data.line,
+                )
+            ]
             if device.is_external_pbx_phone
-        ]
+            else []
+        ),
     )
 
 

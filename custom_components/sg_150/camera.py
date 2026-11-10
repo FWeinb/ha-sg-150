@@ -20,7 +20,7 @@ from homeassistant.helpers.aiohttp_client import (
 from homeassistant.helpers.httpx_client import get_async_client
 
 from .const import CONF_TWO_WAY_AUDIO, LOGGER
-from .entity import SG150DeviceEntity
+from .entity import SG150DeviceEntity, async_add_device_entities
 from .line import CallEnded, CallStarted
 from .talkback import RTCIceServer, Talkback
 
@@ -57,21 +57,23 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the binary_sensor platform."""
-    if entry.runtime_data.coordinator.data is None:
-        LOGGER.warning("Coordinator data is None, skipping binary_sensor setup")
-        return
-
     # Create an entity for each device with an MJPEG stream
-    async_add_entities(
-        SG150Camera(
-            coordinator=entry.runtime_data.coordinator,
-            device=device,
-            url=url,
-            line=entry.runtime_data.line,
-            two_way_audio=entry.options.get(CONF_TWO_WAY_AUDIO, False),
-        )
-        for device in entry.runtime_data.coordinator.data.devices
-        if (url := device.mjpeg_stream_url) is not None
+    async_add_device_entities(
+        entry,
+        async_add_entities,
+        lambda device: (
+            [
+                SG150Camera(
+                    coordinator=entry.runtime_data.coordinator,
+                    device=device,
+                    url=url,
+                    line=entry.runtime_data.line,
+                    two_way_audio=entry.options.get(CONF_TWO_WAY_AUDIO, False),
+                )
+            ]
+            if (url := device.mjpeg_stream_url) is not None
+            else []
+        ),
     )
 
 

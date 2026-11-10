@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from homeassistant.core import callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -11,6 +12,12 @@ from .const import MANUFACTURER
 from .coordinator import SG150Coordinator
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Iterable
+
+    from homeassistant.helpers.entity import Entity
+    from homeassistant.helpers.entity_platform import AddEntitiesCallback
+
+    from .data import SG150ConfigEntry
     from .types import SG150Device
 
 # Unique IDs of entities that existed before entity keys were introduced, kept so
@@ -73,6 +80,33 @@ class SG150DeviceEntity(CoordinatorEntity[SG150Coordinator]):
             via_device_id=coordinator.gateway_device_id,
         )
 
-    def get_device(self) -> SG150Device:
-        """Get the device data associated with this entity."""
+    def get_device(self) -> SG150Device | None:
+        """Get the device's data, or None if the gateway no longer reports it."""
         return self.coordinator.data.by_id(self._device_id)
+
+    @property
+    def available(self) -> bool:
+        """Return whether the gateway is reachable and still reports the device."""
+        return super().available and self.get_device() is not None
+
+
+@callback
+def async_add_device_entities(
+    entry: SG150ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+    create: Callable[[SG150Device], Iterable[Entity]],
+) -> None:
+    """Add the entities `create` returns for each device, also for new devices."""
+    coordinator = entry.runtime_data.coordinator
+    known: set[str] = set()
+
+    @callback
+    def add_new_devices() -> None:
+        devices = coordinator.data.devices if coordinator.data else []
+        new = [device for device in devices if device.id not in known]
+        known.update(device.id for device in new)
+        if entities := [entity for device in new for entity in create(device)]:
+            async_add_entities(entities)
+
+    add_new_devices()
+    entry.async_on_unload(coordinator.async_add_listener(add_new_devices))

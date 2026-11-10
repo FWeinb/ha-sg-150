@@ -2,16 +2,24 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 
 import pytest
-from homeassistant.const import STATE_OFF, STATE_ON, STATE_UNKNOWN
-from homeassistant.exceptions import ServiceValidationError
+from homeassistant.const import (
+    STATE_OFF,
+    STATE_ON,
+    STATE_UNAVAILABLE,
+    STATE_UNKNOWN,
+)
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 
 from custom_components.sg_150.const import DOMAIN
-from tests.conftest import API_URL, MAC
+from tests.conftest import API_URL, MAC, TOKEN
 from tests.sip_messages import GATEWAY, HA_NUMBER, ack, bye, invite, register
+from tests.utils import FIXTURES
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -208,3 +216,91 @@ async def test_camera_without_two_way_audio_stays_mjpeg(
     response = await client.receive_json()
 
     assert response["result"] == {"frontend_stream_types": [], "two_way_audio": False}
+
+
+async def _refresh_with(
+    hass: HomeAssistant, gateway_api: AiohttpClientMocker, devices: list[dict]
+) -> None:
+    gateway_api.clear_requests()
+    gateway_api.post(f"{API_URL}/oauth/token", json=TOKEN)
+    gateway_api.get(f"{API_URL}/system/devices", json={"devices": devices})
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+    await entry.runtime_data.coordinator.async_refresh()
+    await hass.async_block_till_done()
+
+
+def _fixture_devices() -> list[dict]:
+    return json.loads((FIXTURES / "system_devices.json").read_text())["devices"]
+
+
+@pytest.mark.usefixtures("setup_integration")
+async def test_failed_button_request_raises_home_assistant_error(
+    hass: HomeAssistant, gateway_api: AiohttpClientMocker
+) -> None:
+    """A gateway error on a button press is a HomeAssistantError, not a traceback."""
+    gateway_api.clear_requests()
+    gateway_api.post(f"{API_URL}/in-home/switchLightRequests", status=500)
+
+    with pytest.raises(HomeAssistantError) as err:
+        await hass.services.async_call(
+            "button",
+            "press",
+            {"entity_id": entity_id(hass, "button", MAC)},
+            blocking=True,
+        )
+    assert err.value.translation_key == "gateway_request_failed"
+
+
+@pytest.mark.usefixtures("setup_integration")
+async def test_new_device_gets_entities_without_reload(
+    hass: HomeAssistant, gateway_api: AiohttpClientMocker
+) -> None:
+    """A door station added on the gateway appears at the next refresh."""
+    devices = _fixture_devices()
+    side = json.loads(json.dumps(devices[1]))  # a copy of the back door
+    side["id"], side["name"] = "door-side", "Side Door"
+    await _refresh_with(hass, gateway_api, [*devices, side])
+
+    assert entity_id(hass, "button", "door-sideDoor Opener")
+
+
+@pytest.mark.usefixtures("setup_integration")
+async def test_removed_device_is_detached_unless_the_list_is_empty(
+    hass: HomeAssistant, gateway_api: AiohttpClientMocker
+) -> None:
+    """A device the gateway drops leaves the registry; an empty reply removes none."""
+    registry = dr.async_get(hass)
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+
+    def device_ids() -> set[str]:
+        return {
+            next(iter(d.identifiers))[1]
+            for d in dr.async_entries_for_config_entry(registry, entry.entry_id)
+        }
+
+    before = device_ids()
+    await _refresh_with(hass, gateway_api, [])
+    assert device_ids() == before
+
+    await _refresh_with(
+        hass, gateway_api, [d for d in _fixture_devices() if d["id"] != "door-back"]
+    )
+    assert device_ids() == before - {"door-back"}
+    assert entry.entry_id in device_ids()
+
+
+@pytest.mark.usefixtures("setup_integration")
+async def test_entities_of_unreported_devices_are_unavailable(
+    hass: HomeAssistant, gateway_api: AiohttpClientMocker
+) -> None:
+    """A device missing from the reply makes its entities unavailable, not fail."""
+    await _refresh_with(hass, gateway_api, [])
+
+    door_type = hass.states.get(entity_id(hass, "sensor", "door-frontDoor Type"))
+    assert door_type.state == STATE_UNAVAILABLE
+    assert hass.states.get(entity_id(hass, "button", MAC)).state != STATE_UNAVAILABLE
+
+    await _refresh_with(hass, gateway_api, _fixture_devices())
+
+    door_type = hass.states.get(entity_id(hass, "sensor", "door-frontDoor Type"))
+    assert door_type.state == "SMART_DOOR_STATION"

@@ -85,7 +85,7 @@ async def async_setup_entry(
     # Workaround to avoid blocking imports from dnspython (https://github.com/rthalley/dnspython/issues/1083)
     await hass.async_add_executor_job(load_dnspython_rdata_classes)
 
-    coordinator = SG150Coordinator(hass=hass)
+    coordinator = SG150Coordinator(hass=hass, config_entry=entry)
 
     client = SG150ApiClient(
         host_address=entry.data.get(CONF_HOST_ADDRESS),
