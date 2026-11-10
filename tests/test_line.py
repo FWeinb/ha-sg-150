@@ -3,6 +3,7 @@
 import asyncio
 import re
 import unittest
+from unittest.mock import patch
 
 import pytest
 
@@ -150,6 +151,19 @@ class GatewayLineTests(unittest.IsolatedAsyncioTestCase):
         assert not self.line.ringing
         assert isinstance(self.events[-1], CallStarted)
         assert self.line.calls["call-5"].rtp_session().codec == "PCMA"
+
+    async def test_refused_answer_raises_call_failed(self) -> None:
+        """Answering without a free RTP port fails instead of reporting success."""
+        self.line = self._ring_along_line()
+        await self._receive(invite("call-10", "*111", HA_NUMBER))
+
+        with (
+            patch.object(self.server, "_open_rtp", return_value=None),
+            pytest.raises(CallFailedError),
+        ):
+            await self.line.answer("call-10")
+
+        assert self._sent_status_lines()[-1] == "SIP/2.0 503 Service Unavailable"
 
     async def test_cancelled_ringing_call_cannot_be_answered(self) -> None:
         """A handset answering first (CANCEL) ends the ringing call."""

@@ -1034,13 +1034,13 @@ class MiniSIPServer:
 
         await self._answer_invite(invite)
 
-    async def answer_call(self, call_id: str) -> None:
-        """Answer an incoming call that is ringing."""
+    async def answer_call(self, call_id: str) -> bool:
+        """Answer an incoming call that is ringing; False if it was refused."""
         invite = self.ringing.pop(call_id, None)
         if invite is None:
             _msg = f"There is currently no ringing call with call id: {call_id}"
             raise ValueError(_msg)
-        await self._answer_invite(invite)
+        return await self._answer_invite(invite)
 
     async def reject_call(self, call_id: str) -> None:
         """Reject an incoming call that is ringing as busy."""
@@ -1052,8 +1052,12 @@ class MiniSIPServer:
         log_sip_event("INCOMING_CALL_REJECTED", addr=f"{invite.addr}", call_id=call_id)
         await self._fire_event("on_call_busy", call_id, invite.addr)
 
-    async def _answer_invite(self, invite: _IncomingInvite) -> None:
-        """Open the call's RTP session and send 200 OK with our SDP answer."""
+    async def _answer_invite(self, invite: _IncomingInvite) -> bool:
+        """
+        Open the call's RTP session and send 200 OK with our SDP answer.
+
+        Returns False if the call was refused instead, with 488 or 503.
+        """
         message, addr, media = invite.message, invite.addr, invite.media
         call_id = message.get("Call-ID")
 
@@ -1062,7 +1066,7 @@ class MiniSIPServer:
             self._send(build_response(488, "Not Acceptable Here", message), addr)
             log_sip_event("INCOMING_CALL_NO_CODEC", addr=f"{addr}", call_id=call_id)
             await self._fire_event("on_call_failed", call_id, addr, 488)
-            return
+            return False
 
         remote = (
             (media["ip"], media["port"])
@@ -1075,7 +1079,7 @@ class MiniSIPServer:
         if port is None:
             self._send(build_response(503, "Service Unavailable", message), addr)
             await self._fire_event("on_call_failed", call_id, addr, 503)
-            return
+            return False
 
         sdp = build_sdp(
             self.call_host, port, [payload_type], media.get("telephone_event")
@@ -1107,6 +1111,7 @@ class MiniSIPServer:
             name=f"sip-ack-wait-{call_id}",
         )
         log_sip_event("INCOMING_CALL_ACCEPTED", addr=f"{addr}", call_id=call_id)
+        return True
 
     async def _resend_until_ack(
         self, call_id: str, response: bytes, addr: tuple[str, int]

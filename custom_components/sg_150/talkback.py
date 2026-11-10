@@ -23,7 +23,13 @@ import numpy as np
 from homeassistant.components.camera import WebRTCAnswer, WebRTCError
 
 from .const import LOGGER
-from .line import CallEnded, CallStarted, IncomingCall, NotRingingError
+from .line import (
+    CallEnded,
+    CallFailedError,
+    CallStarted,
+    IncomingCall,
+    NotRingingError,
+)
 from .sip.rtp import PTIME, SAMPLE_RATE, SAMPLES_PER_FRAME
 
 # aiortc only uses google-crc32c to checksum SCTP (data channel) packets, and the
@@ -438,8 +444,11 @@ class Talkback:
     async def _answer_ringing_call(self) -> None:
         for call in list(self._line.ringing.values()):
             if call.involves(self._device_id):
-                with contextlib.suppress(NotRingingError):
-                    await self._line.answer(call.id)
+                try:
+                    with contextlib.suppress(NotRingingError):  # answered already
+                        await self._line.answer(call.id)
+                except CallFailedError as err:
+                    LOGGER.warning("Could not answer the ring: %s", err)
                 return
 
     async def _read_microphone(
