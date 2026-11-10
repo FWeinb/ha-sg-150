@@ -267,6 +267,7 @@ class RtpSession(asyncio.DatagramProtocol):
         self.receive_timeout = RTP_TIMEOUT
         self._last_received = 0.0
         self._timed_out = False
+        self._warned_frame_size = False
 
     @property
     def payload_type(self) -> int:
@@ -302,9 +303,24 @@ class RtpSession(asyncio.DatagramProtocol):
         packet = RtpPacket.parse(data)
         if packet is None:
             return
+        if self.remote is not None and addr[0] != self.remote[0]:
+            # Not from the other side. Only the IP counts: the source port
+            # may differ from the one in the SDP.
+            return
         self._last_received = time.monotonic()
         if packet.payload_type != self.payload_type:
             return  # telephone-event and comfort noise
+        if len(packet.payload) != SAMPLES_PER_FRAME:
+            # Other packet times would skew the 20 ms playout.
+            if not self._warned_frame_size:
+                self._warned_frame_size = True
+                logger.warning(
+                    "Dropping RTP packets with %d instead of %d samples from %s",
+                    len(packet.payload),
+                    SAMPLES_PER_FRAME,
+                    addr,
+                )
+            return
         if self.remote is None:
             self.remote = addr
         self.jitter.push(packet.sequence, packet.payload)
@@ -410,7 +426,10 @@ class RtpSession(asyncio.DatagramProtocol):
         loop = asyncio.get_running_loop()
         next_tick = loop.time()
         while True:
-            self.tick()
+            try:
+                self.tick()
+            except Exception:
+                logger.exception("Error in RTP tick")  # keep the clock running
             next_tick += PTIME
             lag = loop.time() - next_tick
             if lag > MAX_TICK_LAG * PTIME:
