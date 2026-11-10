@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+import re
 from typing import TYPE_CHECKING, Any
 
 import voluptuous as vol
@@ -13,7 +14,7 @@ from homeassistant.const import (
 )
 from homeassistant.core import callback
 from homeassistant.helpers import selector
-from homeassistant.helpers.aiohttp_client import async_create_clientsession
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import (
     SG150ApiClient,
@@ -41,6 +42,8 @@ from .const import (
 
 MIN_RTP_PORT = 1024
 MAX_RTP_PORT = 65535
+# A host name or IPv4 address; the API URL adds the scheme and port itself.
+_HOST = re.compile(r"[A-Za-z0-9.-]+")
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -72,15 +75,18 @@ class SG150FlowHandler(config_entries.ConfigFlow, domain=DOMAIN):  # pylint: dis
         errors = {}
 
         if user_input is not None:
-            host_address = user_input[CONF_HOST_ADDRESS]
-            if await self.async_set_unique_id(host_address.lower()):
-                self._abort_if_unique_id_configured()
+            host_address = user_input[CONF_HOST_ADDRESS].strip()
+            if not _HOST.fullmatch(host_address):
+                errors = {CONF_HOST_ADDRESS: "host"}
+            else:
+                if await self.async_set_unique_id(host_address.lower()):
+                    self._abort_if_unique_id_configured()
 
-            username = user_input[CONF_USERNAME]
-            password = SG150ApiClient.hash_password(user_input[CONF_PASSWORD])
-            errors = await self._async_check_credentials(
-                host_address=host_address, username=username, password=password
-            )
+                username = user_input[CONF_USERNAME]
+                password = SG150ApiClient.hash_password(user_input[CONF_PASSWORD])
+                errors = await self._async_check_credentials(
+                    host_address=host_address, username=username, password=password
+                )
             if not errors:
                 self._data[CONF_HOST_ADDRESS] = host_address
                 self._data[CONF_USERNAME] = username
@@ -196,7 +202,7 @@ class SG150FlowHandler(config_entries.ConfigFlow, domain=DOMAIN):  # pylint: dis
             port=API_PORT,
             username=username,
             password=password,
-            session=async_create_clientsession(self.hass),
+            session=async_get_clientsession(self.hass),
         )
         try:
             await client.authenticate()

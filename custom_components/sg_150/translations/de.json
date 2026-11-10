@@ -55,6 +55,7 @@
             }
         },
         "error": {
+            "host": "Gib den Hostnamen oder die IP-Adresse des Gateways ein, ohne http:// und ohne Pfad.",
             "auth": "Benutzername/Passwort falsch.",
             "connection": "Die Verbindung zum Server konnte nicht hergestellt werden.",
             "unknown": "Unerwarteter Fehler",

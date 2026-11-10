@@ -55,6 +55,7 @@
             }
         },
         "error": {
+            "host": "Enter the host name or IP address of the gateway, without http:// or a path.",
             "auth": "Username/Password is wrong.",
             "connection": "Unable to connect to the server.",
             "unknown": "Unexpected error",

@@ -105,6 +105,36 @@ async def test_user_flow_reports_errors(
     assert result["errors"] == {"base": error}
 
 
+async def test_user_flow_strips_the_host(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """Whitespace around the host is removed before it is stored."""
+    aioclient_mock.post(f"{API_URL}/oauth/token", json=TOKEN)
+
+    result = await _start(hass)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {**CREDENTIALS, CONF_HOST_ADDRESS: f" {HOST} "}
+    )
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], OPTIONS)
+
+    assert result["data"][CONF_HOST_ADDRESS] == HOST
+
+
+@pytest.mark.parametrize("host", [f"http://{HOST}", f"{HOST}/api", f"{HOST}:80", ""])
+async def test_user_flow_rejects_a_url_as_host(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, host: str
+) -> None:
+    """A scheme, path or port is refused without contacting anything."""
+    result = await _start(hass)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {**CREDENTIALS, CONF_HOST_ADDRESS: host}
+    )
+
+    assert result["step_id"] == "user"
+    assert result["errors"] == {CONF_HOST_ADDRESS: "host"}
+    assert not aioclient_mock.mock_calls
+
+
 async def test_user_flow_aborts_for_configured_gateway(
     hass: HomeAssistant, config_entry: MockConfigEntry
 ) -> None:
