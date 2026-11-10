@@ -5,8 +5,10 @@ import io
 import unittest
 
 import numpy as np
+import pytest
 import soundfile as sf
 
+from custom_components.sg_150.sip import minisip
 from custom_components.sg_150.sip.minisip import (
     MiniSIPServer,
     convert_audio_to_pcma,
@@ -111,6 +113,11 @@ class MiniSIPAudioTests(unittest.IsolatedAsyncioTestCase):
 
         assert len(pcma) == 160
         assert all(0 <= byte <= 255 for byte in pcma)
+
+    async def test_undecodable_audio_raises_value_error(self) -> None:
+        """Garbage with a supported mime type is a ValueError naming the type."""
+        with pytest.raises(ValueError, match="audio/wav"):
+            minisip.convert_audio_to_pcm(b"not a wav file", "audio/wav")
 
     async def test_convert_audio_to_pcma_from_mp3(self) -> None:
         """Test converting audio from MP3 MIME data to PCMA."""

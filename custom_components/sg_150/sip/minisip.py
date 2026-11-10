@@ -181,7 +181,11 @@ def convert_audio_to_pcm(audio_data: bytes, mime_type: str) -> np.ndarray:
         "audio/mp3",
     }:
         wav_buffer = io.BytesIO(audio_data)
-        samples, sample_rate = sf.read(wav_buffer, dtype="int16", always_2d=False)
+        try:
+            samples, sample_rate = sf.read(wav_buffer, dtype="int16", always_2d=False)
+        except sf.LibsndfileError as err:
+            msg = f"Could not decode {mime_type} audio: {err}"
+            raise ValueError(msg) from err
         if np.asarray(samples).ndim > 1:
             samples = samples[:, 0]
         return _resample_pcm(samples, int(sample_rate))
@@ -1475,8 +1479,10 @@ class MiniSIPServer:
 
     async def play_audio(self, call_id: str, mime_type: str, audio_data: bytes) -> None:
         """Send media audio into the call and wait until it has been sent."""
-        session = self.rtp_session(call_id)
-        session.write_pcm(convert_audio_to_pcm(audio_data, mime_type))
+        self.rtp_session(call_id)  # fail before decoding if the call is gone
+        pcm = await asyncio.to_thread(convert_audio_to_pcm, audio_data, mime_type)
+        session = self.rtp_session(call_id)  # it may have ended while decoding
+        session.write_pcm(pcm)
         await session.drain()
 
     async def send_sip_info_dtmf(

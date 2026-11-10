@@ -34,8 +34,12 @@ send_sip_info_dtmf:
         text:
     duration:
       required: false
+      default: 100
       selector:
-        text:
+        number:
+          min: 1
+          mode: box
+          unit_of_measurement: ms
     config_entry_id:
       required: false
       selector:

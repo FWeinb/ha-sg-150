@@ -6,10 +6,15 @@ import asyncio
 import json
 import re
 from typing import TYPE_CHECKING
+from unittest.mock import patch
 
 import pytest
+import voluptuous as vol
+from homeassistant.components.media_source import PlayMedia, Unresolvable
+from homeassistant.exceptions import HomeAssistantError
 from pytest_homeassistant.common import MockConfigEntry
 
+from custom_components.sg_150 import services
 from custom_components.sg_150.const import API_PORT, CONF_HOST_ADDRESS, DOMAIN
 from tests.conftest import MACHINE_INFO, TOKEN
 from tests.sip_messages import (
@@ -193,3 +198,100 @@ async def test_config_entry_id_selects_the_gateway(
     assert await call(hass, "start_call", to="*111") == {
         "error": "Several SG-150 gateways are loaded, specify config_entry_id"
     }
+
+
+@pytest.mark.usefixtures("setup_integration")
+@pytest.mark.parametrize(
+    ("service", "data"),
+    [
+        ("start_call", {}),
+        ("start_call", {"to": "*111\r\nVia: x"}),
+        ("start_call", {"to": "sip:evil@host"}),
+        ("stop_call", {}),
+        ("send_sip_info_dtmf", {"call_id": "c", "signal": "1;x"}),
+        ("send_sip_info_dtmf", {"call_id": "c", "signal": "1", "duration": "0"}),
+        ("play_audio", {"call_id": "c"}),
+    ],
+)
+async def test_invalid_service_data_is_rejected(
+    hass: HomeAssistant, service: str, data: dict[str, str]
+) -> None:
+    """The schemas keep anything but dial characters out of SIP messages."""
+    with pytest.raises(vol.Invalid):
+        await call(hass, service, return_response=service == "start_call", **data)
+
+
+async def test_dtmf_signal_is_sent_upper_case(
+    hass: HomeAssistant, setup_integration: MiniSIPServer
+) -> None:
+    """A lower-case DTMF letter is accepted and sent as the upper-case signal."""
+    await establish_incoming_call(setup_integration, "call-5")
+
+    await call(
+        hass, "send_sip_info_dtmf", return_response=False, call_id="call-5", signal="a"
+    )
+
+    info = next(
+        data.decode()
+        for data, _ in setup_integration.transport.sent
+        if data.startswith(b"INFO ")
+    )
+    assert info.endswith("Signal=A\r\nDuration=100")
+
+
+@pytest.mark.usefixtures("setup_integration")
+async def test_errors_raise_when_no_response_is_asked_for(
+    hass: HomeAssistant,
+) -> None:
+    """Without return_response a failure shows up as HomeAssistantError."""
+    with pytest.raises(HomeAssistantError, match="no active call"):
+        await call(hass, "stop_call", return_response=False, call_id="missing")
+
+
+async def test_unresolvable_media_is_reported(
+    hass: HomeAssistant, setup_integration: MiniSIPServer
+) -> None:
+    """A media source that cannot be resolved is an error, not a crash."""
+    await establish_incoming_call(setup_integration, "call-6")
+
+    with patch.object(
+        services.media_source,
+        "async_resolve_media",
+        side_effect=Unresolvable("Unknown media source"),
+    ):
+        response = await call(
+            hass, "play_audio", call_id="call-6", media_source_id="media-source://x"
+        )
+
+    assert response == {"error": "Unknown media source"}
+
+
+@pytest.mark.parametrize(
+    ("mock", "error"),
+    [
+        ({"content": b"\0" * (services.MAX_AUDIO_BYTES + 1)}, "larger than"),
+        ({"exc": TimeoutError()}, "Could not download"),
+        ({"status": 404}, "status 404"),
+    ],
+)
+async def test_media_downloads_are_limited(
+    hass: HomeAssistant,
+    setup_integration: MiniSIPServer,
+    aioclient_mock: AiohttpClientMocker,
+    mock: dict[str, object],
+    error: str,
+) -> None:
+    """Large, slow or failing downloads end in an error response."""
+    await establish_incoming_call(setup_integration, "call-7")
+    aioclient_mock.get("http://media.test/clip.wav", **mock)
+
+    with patch.object(
+        services.media_source,
+        "async_resolve_media",
+        return_value=PlayMedia("http://media.test/clip.wav", "audio/wav"),
+    ):
+        response = await call(
+            hass, "play_audio", call_id="call-7", media_source_id="media-source://x"
+        )
+
+    assert error in response["error"]
