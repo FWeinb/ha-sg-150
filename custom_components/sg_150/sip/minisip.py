@@ -14,11 +14,11 @@ import io
 import ipaddress
 import logging
 import os
-import random
 import re
 import secrets
 import socket
 import time
+import uuid
 from collections.abc import Callable, Coroutine, Iterable
 from dataclasses import dataclass, field
 from enum import Enum
@@ -693,7 +693,7 @@ class MiniSIPServer:
 
     def new_call_id(self) -> str:
         """Get a new call id."""
-        return at_address(random.randint(100000, 999999), self.call_host)  # noqa: S311, no crypto here
+        return at_address(uuid.uuid4().hex, self.call_host)
 
     def next_cseq_for(self, call_id: str) -> int:
         """Compute next cseq for a specific call_id."""

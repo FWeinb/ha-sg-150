@@ -442,6 +442,13 @@ class MiniSIPSenderTests(unittest.IsolatedAsyncioTestCase):
     def _sent(self) -> list[str]:
         return [data.decode() for data, _ in self.server.transport.sent]
 
+    def test_call_ids_do_not_collide(self) -> None:
+        """Call ids are random UUIDs, not six digits."""
+        ids = {self.server.new_call_id() for _ in range(1000)}
+
+        assert len(ids) == 1000
+        assert all(re.fullmatch(rf"[0-9a-f]{{32}}@{HA_HOST}", i) for i in ids)
+
     async def test_requests_from_an_unknown_address_are_dropped(self) -> None:
         """No reply, no call and no RTP session for an unregistered sender."""
         await register(self.server)
