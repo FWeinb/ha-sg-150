@@ -13,12 +13,15 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import fractions
+import ipaddress
+import re
 import time
 import warnings
-from collections import deque
+from collections import Counter, deque
 from typing import TYPE_CHECKING
 
 import av
+import ifaddr
 import numpy as np
 from homeassistant.components.camera import WebRTCAnswer, WebRTCError
 
@@ -80,6 +83,63 @@ AUDIO_QUEUE = 5
 AUDIO_TIME_BASE = fractions.Fraction(1, SAMPLE_RATE)
 # How long a candidate waits for its session's offer to be handled.
 CANDIDATE_TIMEOUT = 10
+# How long an offer waits for the browser's candidates to tell whether it is on
+# our network. aiortc gathers every candidate before it answers, and a STUN
+# query that gets no reply costs aioice's full 5 s, so a browser on the LAN is
+# answered without ICE servers.
+LAN_CANDIDATE_WAIT = 0.5
+
+_OFFER_CANDIDATE = re.compile(r"^a=(candidate:.*|end-of-candidates)\s*$", re.MULTILINE)
+
+type Network = ipaddress.IPv4Network | ipaddress.IPv6Network
+
+
+def lan_networks() -> list[Network]:
+    """Return the networks of our interfaces, without link-local ones."""
+    networks = []
+    for adapter in ifaddr.get_adapters():
+        for ip in adapter.ips:
+            address = ip.ip if isinstance(ip.ip, str) else ip.ip[0]
+            try:
+                network = ipaddress.ip_interface(
+                    f"{address}/{ip.network_prefix}"
+                ).network
+            except ValueError:
+                continue
+            # Every network has link-local addresses, so they say nothing.
+            if not network.is_link_local:
+                networks.append(network)
+    return networks
+
+
+def browser_on_lan(candidates: list[str], networks: list[Network]) -> bool | None:
+    """
+    Tell from a browser's ICE candidates whether it shares a network with us.
+
+    True once a host candidate is on one of `networks`. False once a server
+    reflexive or relayed candidate, or the end of candidates, arrived without
+    one, as browsers announce their host candidates first. None while
+    undecided. Hidden (mDNS) host addresses never match.
+    """
+    for value in candidates:
+        parts = value.removeprefix("candidate:").split()
+        if not parts or parts[0] == "end-of-candidates":
+            continue
+        try:
+            kind = parts[parts.index("typ") + 1]
+            address = ipaddress.ip_address(parts[4])
+        except (ValueError, IndexError):
+            continue  # an mDNS name, or not a candidate
+        if kind == "host" and any(address in network for network in networks):
+            return True
+    if any(
+        not value.strip()
+        or value == "end-of-candidates"
+        or re.search(r"\btyp (srflx|relay)\b", value)
+        for value in candidates
+    ):
+        return False
+    return None
 
 
 def offer_sends_audio(offer_sdp: str) -> bool:
@@ -345,6 +405,10 @@ class _Session:
         self.video = video
         self.ready = asyncio.Event()
         self.tasks: set[asyncio.Task] = set()
+        # The browser's ICE candidates that arrived before our answer.
+        self.browser_candidates: list[str] = []
+        self.candidate_added = asyncio.Event()
+        self.started = time.monotonic()
 
     async def close(self) -> None:
         for task in self.tasks:
@@ -482,8 +546,11 @@ class Talkback:
         )
         self._sessions[session_id] = session
         try:
+            on_lan = bool(ice_servers) and await self._browser_on_lan(
+                session, offer_sdp
+            )
             pc = session.pc = RTCPeerConnection(
-                RTCConfiguration(iceServers=ice_servers)
+                RTCConfiguration(iceServers=[] if on_lan else ice_servers)
             )
 
             audio = pc.addTransceiver(
@@ -504,6 +571,12 @@ class Talkback:
 
             @pc.on("connectionstatechange")
             async def on_connection_state_change() -> None:
+                if pc.connectionState == "connected":
+                    LOGGER.debug(
+                        "WebRTC session %s connected %.2f s after its offer",
+                        session_id,
+                        time.monotonic() - session.started,
+                    )
                 if pc.connectionState == "failed" and session_id in self._sessions:
                     send_message(
                         WebRTCError("webrtc_failed", "The WebRTC connection failed")
@@ -522,10 +595,14 @@ class Talkback:
         session.ready.set()
         send_message(WebRTCAnswer(pc.localDescription.sdp))
         LOGGER.debug(
-            "WebRTC session %s started for %s (talking: %s)",
+            "WebRTC session %s for %s answered in %.2f s (talking: %s, "
+            "browser on LAN: %s, our candidates: %s)",
             session_id,
             self._device_id,
+            time.monotonic() - session.started,
             session.talking,
+            on_lan,
+            dict(Counter(re.findall(r" typ (\w+)", pc.localDescription.sdp))),
         )
 
         if session.talking:
@@ -533,6 +610,23 @@ class Talkback:
             if self._call is not None:
                 self._talked = True
             await self._answer_ringing_call()
+
+    async def _browser_on_lan(self, session: _Session, offer_sdp: str) -> bool:
+        """Wait up to LAN_CANDIDATE_WAIT for the browser's candidates to tell."""
+        networks = await asyncio.to_thread(lan_networks)
+        offered = _OFFER_CANDIDATE.findall(offer_sdp)
+        deadline = time.monotonic() + LAN_CANDIDATE_WAIT
+        while (
+            verdict := browser_on_lan([*offered, *session.browser_candidates], networks)
+        ) is None:
+            session.candidate_added.clear()
+            try:
+                await asyncio.wait_for(
+                    session.candidate_added.wait(), deadline - time.monotonic()
+                )
+            except TimeoutError:
+                return False
+        return verdict
 
     async def add_candidate(
         self,
@@ -546,6 +640,10 @@ class Talkback:
         if session is None:
             msg = f"Unknown WebRTC session: {session_id}"
             raise ValueError(msg)
+        if not session.ready.is_set():
+            # Tells _browser_on_lan whether the browser is on our network.
+            session.browser_candidates.append(candidate)
+            session.candidate_added.set()
         await asyncio.wait_for(session.ready.wait(), CANDIDATE_TIMEOUT)
         value = candidate.removeprefix("candidate:").strip()
         if not value or self._sessions.get(session_id) is not session:
