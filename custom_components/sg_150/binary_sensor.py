@@ -54,6 +54,7 @@ class SipRegistered(SG150GatewayEntity, BinarySensorEntity):
 
     async def async_added_to_hass(self) -> None:
         """Subscribe to line events."""
+        await super().async_added_to_hass()
         self.async_on_remove(self._line.subscribe(self._on_line_event))
 
     def _on_line_event(self, event: LineEvent) -> None:
@@ -66,7 +67,10 @@ class SipRegistered(SG150GatewayEntity, BinarySensorEntity):
         """Update the boolean state of the binary entity."""
         registration = self._line.registration
         self._attr_is_on = registration is not None
-        if registration is not None:
+        if registration is None:
+            self._attr_extra_state_attributes.pop("sip-client", None)
+            self._attr_extra_state_attributes.pop("expires-at", None)
+        else:
             addr = registration.addr
             expires_at = as_local(
                 datetime.fromtimestamp(registration.expires_at, tz=UTC)

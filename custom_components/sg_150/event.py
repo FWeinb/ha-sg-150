@@ -86,4 +86,5 @@ class SG150RingingEvent(SG150DeviceEntity, EventEntity):
 
     async def async_added_to_hass(self) -> None:
         """Subscribe to line events."""
+        await super().async_added_to_hass()
         self.async_on_remove(self._line.subscribe(self._on_line_event))

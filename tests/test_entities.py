@@ -160,6 +160,30 @@ async def test_sip_connection_follows_registration(
     assert state.state == STATE_ON
     assert state.attributes["sip-client"] == f"{GATEWAY[0]}:{GATEWAY[1]}"
 
+    await register(setup_integration, call_id="register-2", Expires="0")
+    await hass.async_block_till_done()
+
+    state = hass.states.get(sensor)
+    assert state.state == STATE_OFF
+    assert "sip-client" not in state.attributes
+    assert "expires-at" not in state.attributes
+
+
+@pytest.mark.usefixtures("setup_integration")
+async def test_line_entities_follow_the_coordinator(
+    hass: HomeAssistant, gateway_api: AiohttpClientMocker
+) -> None:
+    """A failed refresh makes the SIP sensor and the bell unavailable."""
+    gateway_api.clear_requests()
+    gateway_api.get(f"{API_URL}/system/devices", status=500)
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+    await entry.runtime_data.coordinator.async_refresh()
+    await hass.async_block_till_done()
+
+    for platform, unique_id in [("binary_sensor", MAC), ("event", "pbx-externalBell")]:
+        state = hass.states.get(entity_id(hass, platform, unique_id))
+        assert state.state == STATE_UNAVAILABLE, platform
+
 
 async def test_bell_rings_only_for_calls_to_its_phone(
     hass: HomeAssistant, setup_integration: MiniSIPServer
