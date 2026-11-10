@@ -232,7 +232,7 @@ class RtpSessionTests(unittest.IsolatedAsyncioTestCase):
         """Only 20 ms packets are played out; the first other one is logged."""
         session, _ = self._session(remote=GATEWAY_RTP)
 
-        with self.assertLogs("sip-server", "WARNING") as logs:
+        with self.assertLogs("custom_components.sg_150", "WARNING") as logs:
             session.datagram_received(_packet(1, b"\xd5" * 240), GATEWAY_RTP)
             session.datagram_received(_packet(2, b"\xd5" * 80), GATEWAY_RTP)
             session.datagram_received(_packet(3), GATEWAY_RTP)
@@ -252,7 +252,7 @@ class RtpSessionTests(unittest.IsolatedAsyncioTestCase):
             tick()
 
         session.tick = flaky_tick
-        with self.assertLogs("sip-server", "ERROR"):
+        with self.assertLogs("custom_components.sg_150", "ERROR"):
             session.start()
             await asyncio.sleep(0.07)
         session.close()

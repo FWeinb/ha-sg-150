@@ -517,7 +517,7 @@ class MiniSIPSenderTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(loop, "getaddrinfo", getaddrinfo),
-            self.assertLogs("sip-server", "WARNING") as logs,
+            self.assertLogs("custom_components.sg_150", "WARNING") as logs,
         ):
             await server._resolve_trusted_hosts()  # noqa: SLF001
 
@@ -590,7 +590,7 @@ class MiniSIPSenderTests(unittest.IsolatedAsyncioTestCase):
 
         self.server.add_listener("on_incoming_call", broken)
 
-        with self.assertLogs("sip-server", "ERROR"):
+        with self.assertLogs("custom_components.sg_150", "ERROR"):
             await self.server.handle_datagram(invite("c2", "*111", HA_NUMBER), GATEWAY)
 
         assert self._sent()[-1].startswith("SIP/2.0 500 Server Internal Error")
@@ -602,7 +602,7 @@ class MiniSIPSenderTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(self.server, "handle_options", side_effect=RuntimeError),
-            self.assertLogs("sip-server", "ERROR") as logs,
+            self.assertLogs("custom_components.sg_150", "ERROR") as logs,
         ):
             await self.server.handle_datagram(options("o1", 1), GATEWAY)
 
@@ -1077,6 +1077,15 @@ class MiniSIPRegistrationTests(unittest.IsolatedAsyncioTestCase):
 
     def _last_sent(self) -> str:
         return self.server.transport.sent[-1][0].decode()
+
+    async def test_credentials_are_masked_in_the_debug_log(self) -> None:
+        """Received messages are logged at debug without the digest."""
+        with self.assertLogs("custom_components.sg_150", "DEBUG") as logs:
+            data = await register(self.server)
+
+        digest = re.search(rb'response="([^"]+)"', data).group(1).decode()
+        assert any("<masked>" in line for line in logs.output)
+        assert not any(digest in line for line in logs.output)
 
     async def test_replayed_register_is_rejected(self) -> None:
         """A captured REGISTER cannot move the registration to another address."""

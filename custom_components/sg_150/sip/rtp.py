@@ -22,7 +22,7 @@ import numpy as np
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-logger = logging.getLogger("sip-server")
+logger = logging.getLogger(__name__)
 
 PCMU = 0
 PCMA = 8

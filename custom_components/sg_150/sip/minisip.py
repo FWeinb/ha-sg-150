@@ -38,13 +38,21 @@ from .rtp import (
     open_udp_endpoint,
 )
 
-logger = logging.getLogger("sip-server")
+logger = logging.getLogger(__name__)
 
 
 def log_sip_event(event: str, **kwargs: any) -> None:
-    """Loggin helper for SIP Events."""
-    fields = " ".join(f"{k}={v}" for k, v in kwargs.items())
-    logger.info("%s %s", event, fields)
+    """Log a SIP event, formatting it only when INFO is enabled."""
+    if logger.isEnabledFor(logging.INFO):
+        fields = " ".join(f"{k}={v}" for k, v in kwargs.items())
+        logger.info("%s %s", event, fields)
+
+
+def _masked(message: dict[str, str]) -> dict[str, str]:
+    """Return the message with its credentials masked, for logging."""
+    if "Authorization" not in message:
+        return message
+    return {**message, "Authorization": "<masked>"}
 
 
 def at_address(name: str, host: str) -> str:
@@ -1589,7 +1597,8 @@ class MiniSIPServer:
             log_sip_event("SIP_UNTRUSTED_DROPPED", addr=f"{addr}", method=method)
             return
 
-        log_sip_event(method, addr=f"{addr}", message=message)
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("%s from %s: %s", method, addr, _masked(message))
 
         if message[":start_line"].startswith("SIP/2.0"):
             self._handle_response(message)
