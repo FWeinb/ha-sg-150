@@ -10,6 +10,7 @@ Doing that via an authenticated Home Assistant view endpoint is the easiest way.
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
 from aiohttp import web
@@ -37,6 +38,8 @@ if TYPE_CHECKING:
 
 IMAGE_URL = "/api/sg_150/image/{entry_id}/{uid}"
 IMAGE_MIME_TYPE = "image/jpeg"
+# Image uids go into the gateway URL, so nothing may escape the image route.
+_UID = re.compile(r"[A-Za-z0-9_-]+")
 
 
 async def async_get_media_source(hass: HomeAssistant) -> MediaSource:
@@ -104,6 +107,9 @@ class SG150MediaSource(MediaSource):
             msg = f"Unknown SG-150 media item: {item.identifier}"
             raise Unresolvable(msg)
         entry_id, _, uid = parts
+        if not _UID.fullmatch(uid):
+            msg = f"Invalid SG-150 image id: {uid}"
+            raise Unresolvable(msg)
         return PlayMedia(_image_url(entry_id, uid), IMAGE_MIME_TYPE)
 
     async def async_browse_media(self, item: MediaSourceItem) -> BrowseMediaSource:
@@ -204,7 +210,7 @@ class SG150ImageView(HomeAssistantView):
     async def get(self, _: web.Request, entry_id: str, uid: str) -> web.Response:
         """Fetch the image from the gateway and pass it on."""
         entry = _loaded_entry(self.hass, entry_id)
-        if entry is None:
+        if entry is None or not _UID.fullmatch(uid):
             raise web.HTTPNotFound
 
         try:

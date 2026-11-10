@@ -153,3 +153,24 @@ async def test_proxy_view_errors(
     assert unknown_entry.status == 404
     assert missing_image.status == 502
     assert empty_image.status == 502
+
+
+async def test_image_ids_cannot_leave_the_image_route(
+    hass: HomeAssistant,
+    config_entry: MockConfigEntry,
+    hass_client: ClientSessionGenerator,
+    gateway_api: AiohttpClientMocker,
+) -> None:
+    """A uid that would change the gateway URL never reaches the gateway."""
+    client = await hass_client()
+    entry_id = config_entry.entry_id
+    gateway_api.clear_requests()
+
+    response = await client.get(f"/api/sg_150/image/{entry_id}/x%3Fdebug%3D1")
+
+    assert response.status == 404
+    assert not gateway_api.mock_calls
+    with pytest.raises(media_source.Unresolvable):
+        await media_source.async_resolve_media(
+            hass, f"media-source://{DOMAIN}/{entry_id}/pbx-external/a.b", None
+        )

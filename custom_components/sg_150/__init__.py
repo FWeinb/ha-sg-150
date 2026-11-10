@@ -13,6 +13,7 @@ import dns.rdata
 import dns.rdataclass
 import dns.rdatatype
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
+from homeassistant.exceptions import ConfigEntryError, ConfigEntryNotReady
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.loader import async_get_loaded_integration
@@ -84,7 +85,7 @@ async def async_setup_entry(
     # Workaround to avoid blocking imports from dnspython (https://github.com/rthalley/dnspython/issues/1083)
     await hass.async_add_executor_job(load_dnspython_rdata_classes)
 
-    coordinator = SG150Coordinator(hass=hass)
+    coordinator = SG150Coordinator(hass=hass, config_entry=entry)
 
     client = SG150ApiClient(
         host_address=entry.data.get(CONF_HOST_ADDRESS),
@@ -96,14 +97,23 @@ async def async_setup_entry(
 
     users = {}
     users[entry.options.get(CONF_SIP_USER)] = entry.options.get(CONF_SIP_PASSWORD)
+    # Entries store the ports as strings, as entered in the options form.
+    try:
+        sip_port = int(entry.options.get(CONF_SIP_PORT))
+        rtp_ports = range(
+            int(entry.options.get(CONF_RTP_PORT_MIN, DEFAULT_RTP_PORT_MIN)),
+            int(entry.options.get(CONF_RTP_PORT_MAX, DEFAULT_RTP_PORT_MAX)) + 1,
+        )
+    except (TypeError, ValueError) as err:
+        msg = f"Invalid SIP or RTP port in the options, reconfigure them: {err}"
+        raise ConfigEntryError(msg) from err
     server = MiniSIPServer(
         call_host=entry.options.get(CONF_SIP_CALLER_IP),
         users=users,
-        port=int(entry.options.get(CONF_SIP_PORT)),
-        rtp_ports=range(
-            int(entry.options.get(CONF_RTP_PORT_MIN, DEFAULT_RTP_PORT_MIN)),
-            int(entry.options.get(CONF_RTP_PORT_MAX, DEFAULT_RTP_PORT_MAX)) + 1,
-        ),
+        port=sip_port,
+        rtp_ports=rtp_ports,
+        # Accept the gateway's calls before it registers again after a restart.
+        trusted_hosts=[entry.data.get(CONF_HOST_ADDRESS)],
     )
 
     line = GatewayLine(
@@ -125,9 +135,18 @@ async def async_setup_entry(
 
     await coordinator.async_config_entry_first_refresh()
     await coordinator.async_register_gateway_device()
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    await line.start()
+    try:
+        await line.start()
+    except OSError as err:
+        msg = f"Could not listen on SIP port {server.port}: {err}"
+        raise ConfigEntryNotReady(msg) from err
+
+    try:
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    except BaseException:
+        await line.stop()
+        raise
 
     return True
 
@@ -137,5 +156,7 @@ async def async_unload_entry(
     entry: SG150ConfigEntry,
 ) -> bool:
     """Handle removal of an entry."""
-    await entry.runtime_data.line.stop()
-    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if unloaded:
+        await entry.runtime_data.line.stop()
+    return unloaded

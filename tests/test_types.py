@@ -2,7 +2,11 @@
 
 import unittest
 
-from custom_components.sg_150.types import SG150DeviceCallNumber
+from custom_components.sg_150.types import (
+    SG150DeviceCallNumber,
+    SG150DeviceCapabilityUnknown,
+    SG150DeviceType,
+)
 from tests.utils import load_devices
 
 
@@ -52,6 +56,30 @@ class DeviceCapabilityTests(unittest.TestCase):
         door.phone_endpoint.pbxSystem.type = "EXTERNAL"
 
         assert not door.is_external_pbx_phone
+
+    def test_unknown_values_from_new_firmware_still_load(self) -> None:
+        """Unknown capability, device and video types do not fail validation."""
+        door = self.devices["door-front"]
+        unknown = [
+            capability.root
+            for capability in door.capabilities
+            if isinstance(capability.root, SG150DeviceCapabilityUnknown)
+        ]
+        assert [capability.type for capability in unknown] == ["DOOR_LIGHT"]
+        assert door.phone_endpoint is not None
+
+        intercom = self.devices["intercom-new"]
+        assert intercom.type == "VIDEO_INTERCOM"
+        assert intercom.in_home is not None
+        assert intercom.in_home.deviceType == "VIDEO_INTERCOM"
+        assert intercom.video_extraction is not None
+        assert intercom.mjpeg_stream_url is None
+        assert not intercom.is_door
+        assert not intercom.is_external_pbx_phone
+
+    def test_known_device_type_is_the_enum(self) -> None:
+        """Known device types still parse to SG150DeviceType."""
+        assert self.devices["pbx-external"].type is SG150DeviceType.PBXPHONE
 
 
 class CallNumberTests(unittest.TestCase):

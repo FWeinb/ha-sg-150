@@ -1,7 +1,9 @@
-"""Adds config flow for Blueprint."""
+"""Config and options flows for the SG-150."""
 
 from __future__ import annotations
 
+import ipaddress
+import re
 from typing import TYPE_CHECKING, Any
 
 import voluptuous as vol
@@ -12,7 +14,7 @@ from homeassistant.const import (
 )
 from homeassistant.core import callback
 from homeassistant.helpers import selector
-from homeassistant.helpers.aiohttp_client import async_create_clientsession
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import (
     SG150ApiClient,
@@ -40,13 +42,15 @@ from .const import (
 
 MIN_RTP_PORT = 1024
 MAX_RTP_PORT = 65535
+# A host name or IPv4 address; the API URL adds the scheme and port itself.
+_HOST = re.compile(r"[A-Za-z0-9.-]+")
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
 
 class SG150FlowHandler(config_entries.ConfigFlow, domain=DOMAIN):  # pylint: disable=abstract-method
-    """Config flow for Blueprint."""
+    """Config flow for an SG-150 gateway."""
 
     VERSION = 1
 
@@ -59,7 +63,7 @@ class SG150FlowHandler(config_entries.ConfigFlow, domain=DOMAIN):  # pylint: dis
     @callback
     def async_get_options_flow(
         _: config_entries.ConfigEntry,
-    ) -> SG150FlowHandler:
+    ) -> SG150OptionsFlowHandler:
         """Get the options flow for this handler."""
         return SG150OptionsFlowHandler()
 
@@ -71,15 +75,18 @@ class SG150FlowHandler(config_entries.ConfigFlow, domain=DOMAIN):  # pylint: dis
         errors = {}
 
         if user_input is not None:
-            host_address = user_input[CONF_HOST_ADDRESS]
-            if await self.async_set_unique_id(host_address.lower()):
-                self._abort_if_unique_id_configured()
+            host_address = user_input[CONF_HOST_ADDRESS].strip()
+            if not _HOST.fullmatch(host_address):
+                errors = {CONF_HOST_ADDRESS: "host"}
+            else:
+                if await self.async_set_unique_id(host_address.lower()):
+                    self._abort_if_unique_id_configured()
 
-            username = user_input[CONF_USERNAME]
-            password = SG150ApiClient.hash_password(user_input[CONF_PASSWORD])
-            errors = await self._async_check_credentials(
-                host_address=host_address, username=username, password=password
-            )
+                username = user_input[CONF_USERNAME]
+                password = SG150ApiClient.hash_password(user_input[CONF_PASSWORD])
+                errors = await self._async_check_credentials(
+                    host_address=host_address, username=username, password=password
+                )
             if not errors:
                 self._data[CONF_HOST_ADDRESS] = host_address
                 self._data[CONF_USERNAME] = username
@@ -195,7 +202,7 @@ class SG150FlowHandler(config_entries.ConfigFlow, domain=DOMAIN):  # pylint: dis
             port=API_PORT,
             username=username,
             password=password,
-            session=async_create_clientsession(self.hass),
+            session=async_get_clientsession(self.hass),
         )
         try:
             await client.authenticate()
@@ -233,16 +240,47 @@ class SG150OptionsFlowHandler(config_entries.OptionsFlowWithReload):
         )
 
 
-def validate_options(options: Mapping[str, Any]) -> dict[str, str]:
-    """Return form errors for the options, if any."""
+def _port(value: object) -> int | None:
     try:
-        low = int(options.get(CONF_RTP_PORT_MIN, DEFAULT_RTP_PORT_MIN))
-        high = int(options.get(CONF_RTP_PORT_MAX, DEFAULT_RTP_PORT_MAX))
+        return int(str(value).strip())
     except ValueError:
-        return {"base": "rtp_ports"}
-    if not MIN_RTP_PORT <= low <= high <= MAX_RTP_PORT:
-        return {"base": "rtp_ports"}
-    return {}
+        return None
+
+
+def validate_options(options: Mapping[str, Any]) -> dict[str, str]:
+    """Return form errors for the options, if any, by field."""
+    errors: dict[str, str] = {}
+    low = _port(options.get(CONF_RTP_PORT_MIN, DEFAULT_RTP_PORT_MIN))
+    high = _port(options.get(CONF_RTP_PORT_MAX, DEFAULT_RTP_PORT_MAX))
+    rtp_ports = (
+        range(low, high + 1)
+        if low is not None
+        and high is not None
+        and MIN_RTP_PORT <= low <= high <= MAX_RTP_PORT
+        else None
+    )
+    if rtp_ports is None:
+        errors["base"] = "rtp_ports"
+
+    if CONF_SIP_PORT in options:
+        sip_port = _port(options[CONF_SIP_PORT])
+        if sip_port is None or not 1 <= sip_port <= MAX_RTP_PORT:
+            errors[CONF_SIP_PORT] = "sip_port"
+        elif rtp_ports is not None and sip_port in rtp_ports:
+            # Both are UDP, so they cannot share a port.
+            errors[CONF_SIP_PORT] = "sip_port_in_rtp_range"
+
+    if CONF_SIP_CALLER_IP in options:
+        # The SDP announces this address for call audio as IN IP4.
+        try:
+            ipaddress.IPv4Address(str(options[CONF_SIP_CALLER_IP]).strip())
+        except ValueError:
+            errors[CONF_SIP_CALLER_IP] = "caller_ip"
+
+    for key in (CONF_SIP_USER, CONF_SIP_NUMBER):
+        if key in options and not str(options[key]).strip():
+            errors[key] = "required"
+    return errors
 
 
 async def get_options_schema(entry: dict | None = None) -> dict:

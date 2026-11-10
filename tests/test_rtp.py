@@ -219,6 +219,46 @@ class RtpSessionTests(unittest.IsolatedAsyncioTestCase):
 
         assert transport.sent[0][1] == ("10.5.1.6", 4000)
 
+    def test_packets_from_another_host_are_ignored(self) -> None:
+        """Once the remote is known, only its IP may send audio, from any port."""
+        session, _ = self._session(remote=GATEWAY_RTP)
+
+        session.datagram_received(_packet(1), ("10.9.9.9", GATEWAY_RTP[1]))
+        session.datagram_received(_packet(2), (GATEWAY_RTP[0], 1))
+
+        assert list(session.jitter._packets) == [2]  # noqa: SLF001
+
+    def test_packets_with_another_frame_size_are_dropped(self) -> None:
+        """Only 20 ms packets are played out; the first other one is logged."""
+        session, _ = self._session(remote=GATEWAY_RTP)
+
+        with self.assertLogs("custom_components.sg_150", "WARNING") as logs:
+            session.datagram_received(_packet(1, b"\xd5" * 240), GATEWAY_RTP)
+            session.datagram_received(_packet(2, b"\xd5" * 80), GATEWAY_RTP)
+            session.datagram_received(_packet(3), GATEWAY_RTP)
+
+        assert len(logs.records) == 1
+        assert list(session.jitter._packets) == [3]  # noqa: SLF001
+
+    async def test_a_failing_tick_keeps_the_clock_running(self) -> None:
+        """An exception in one tick is logged and the next tick still runs."""
+        session, transport = self._session(remote=GATEWAY_RTP)
+        failures = [RuntimeError("boom")]
+        tick = session.tick
+
+        def flaky_tick() -> None:
+            if failures:
+                raise failures.pop()
+            tick()
+
+        session.tick = flaky_tick
+        with self.assertLogs("custom_components.sg_150", "ERROR"):
+            session.start()
+            await asyncio.sleep(0.07)
+        session.close()
+
+        assert transport.sent
+
     async def test_written_pcm_is_sent_in_frames_then_drained(self) -> None:
         """PCM is split into 20 ms frames, padded, and drain() completes after."""
         session, transport = self._session(remote=GATEWAY_RTP)
@@ -350,6 +390,36 @@ class RtpSessionTests(unittest.IsolatedAsyncioTestCase):
         assert len(transport.sent) == sent
         assert closed == [True]
         assert session.transport is None
+
+    async def test_silence_from_the_remote_times_out_once(self) -> None:
+        """on_timeout fires once when nothing arrived for receive_timeout."""
+        session, _ = self._session(remote=GATEWAY_RTP)
+        timeouts = []
+        session.on_timeout = lambda: timeouts.append(True)
+        session.receive_timeout = 0.05
+
+        session.start()
+        await asyncio.sleep(0.15)
+        session.close()
+
+        assert timeouts == [True]
+
+    async def test_received_packets_keep_the_session_alive(self) -> None:
+        """Any received RTP packet, even telephone-event, resets the timeout."""
+        session, _ = self._session(remote=GATEWAY_RTP)
+        timeouts = []
+        session.on_timeout = lambda: timeouts.append(True)
+        session.receive_timeout = 0.05
+
+        session.start()
+        for sequence in range(8):
+            await asyncio.sleep(0.02)
+            session.datagram_received(
+                _packet(sequence, pt=101 if sequence % 2 else PCMA), GATEWAY_RTP
+            )
+        session.close()
+
+        assert not timeouts
 
 
 class RtpPortPoolTests(unittest.TestCase):

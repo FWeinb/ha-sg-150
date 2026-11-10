@@ -105,6 +105,36 @@ async def test_user_flow_reports_errors(
     assert result["errors"] == {"base": error}
 
 
+async def test_user_flow_strips_the_host(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """Whitespace around the host is removed before it is stored."""
+    aioclient_mock.post(f"{API_URL}/oauth/token", json=TOKEN)
+
+    result = await _start(hass)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {**CREDENTIALS, CONF_HOST_ADDRESS: f" {HOST} "}
+    )
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], OPTIONS)
+
+    assert result["data"][CONF_HOST_ADDRESS] == HOST
+
+
+@pytest.mark.parametrize("host", [f"http://{HOST}", f"{HOST}/api", f"{HOST}:80", ""])
+async def test_user_flow_rejects_a_url_as_host(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, host: str
+) -> None:
+    """A scheme, path or port is refused without contacting anything."""
+    result = await _start(hass)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {**CREDENTIALS, CONF_HOST_ADDRESS: host}
+    )
+
+    assert result["step_id"] == "user"
+    assert result["errors"] == {CONF_HOST_ADDRESS: "host"}
+    assert not aioclient_mock.mock_calls
+
+
 async def test_user_flow_aborts_for_configured_gateway(
     hass: HomeAssistant, config_entry: MockConfigEntry
 ) -> None:
@@ -156,6 +186,50 @@ async def test_options_flow_rejects_a_bad_rtp_port_range(
     assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {"base": "rtp_ports"}
     assert CONF_RTP_PORT_MIN not in config_entry.options
+
+
+async def test_options_flow_reports_errors_by_field(
+    hass: HomeAssistant,
+    config_entry: MockConfigEntry,
+    setup_integration: MiniSIPServer,
+) -> None:
+    """Each invalid SIP option is reported next to its field and not stored."""
+    result = await hass.config_entries.options.async_init(config_entry.entry_id)
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            **config_entry.options,
+            CONF_SIP_CALLER_IP: "homeassistant.local",
+            CONF_SIP_PORT: "5004",
+        },
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {
+        CONF_SIP_CALLER_IP: "caller_ip",
+        CONF_SIP_PORT: "sip_port_in_rtp_range",
+    }
+    assert config_entry.options[CONF_SIP_CALLER_IP] == "127.0.0.1"
+
+
+async def test_user_flow_validates_the_sip_options(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """The first setup checks the SIP options like the options flow."""
+    aioclient_mock.post(f"{API_URL}/oauth/token", json=TOKEN)
+    result = await _start(hass)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], CREDENTIALS
+    )
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {**OPTIONS, CONF_SIP_NUMBER: "  "}
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "user_options"
+    assert result["errors"] == {CONF_SIP_NUMBER: "required"}
 
 
 async def test_reauth_updates_credentials_and_reloads(

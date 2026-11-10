@@ -225,12 +225,15 @@ class GatewayLine:
         Answer a ringing incoming call.
 
         Raises NotRingingError if it is not ringing, for example because a
-        handset answered first. The call starts once the gateway ACKs.
+        handset answered first, and CallFailedError if it could not be answered,
+        such as for an unsupported codec. The call starts once the gateway ACKs.
         """
         if self._stop_ringing(call_id) is None:
             msg = f"Call {call_id} is not ringing"
             raise NotRingingError(msg)
-        await self._server.answer_call(call_id)
+        if not await self._server.answer_call(call_id):
+            msg = f"Call {call_id} could not be answered"
+            raise CallFailedError(msg)
 
     def _stop_ringing(self, call_id: str) -> Call | None:
         if (timer := self._ring_timers.pop(call_id, None)) is not None:

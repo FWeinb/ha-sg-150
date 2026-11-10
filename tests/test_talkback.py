@@ -8,6 +8,7 @@ video transceiver. The SIP side is a MiniSIPServer on fake transports.
 
 import asyncio
 import fractions
+import ipaddress
 import socket
 import time
 import unittest
@@ -18,10 +19,16 @@ import av
 import numpy as np
 import pytest
 from aioice import Candidate, Connection
-from aiortc import RTCConfiguration, RTCPeerConnection, RTCSessionDescription
+from aiortc import (
+    RTCConfiguration,
+    RTCIceServer,
+    RTCPeerConnection,
+    RTCSessionDescription,
+)
 from aiortc.mediastreams import MediaStreamError, MediaStreamTrack
 from homeassistant.components.camera import WebRTCAnswer, WebRTCMessage
 
+from custom_components.sg_150 import talkback
 from custom_components.sg_150.line import CallEnded, GatewayLine, LineEvent
 from custom_components.sg_150.sip.minisip import MiniSIPServer
 from custom_components.sg_150.sip.rtp import (
@@ -31,7 +38,12 @@ from custom_components.sg_150.sip.rtp import (
     g711_decode,
     g711_encode,
 )
-from custom_components.sg_150.talkback import Talkback, offer_sends_audio
+from custom_components.sg_150.talkback import (
+    Talkback,
+    browser_on_lan,
+    lan_networks,
+    offer_sends_audio,
+)
 from tests.sip_messages import (
     GATEWAY,
     HA_HOST,
@@ -39,6 +51,7 @@ from tests.sip_messages import (
     SIP_PASSWORD,
     SIP_USER,
     ack,
+    bye,
     invite,
 )
 from tests.utils import FakeTransport, fake_rtp_endpoint, load_devices
@@ -120,12 +133,19 @@ class Browser:
 
         self._tasks.append(asyncio.create_task(read()))
 
-    async def connect(self, talkback: Talkback, session_id: str) -> str:
+    async def connect(
+        self,
+        talkback: Talkback,
+        session_id: str,
+        ice_servers: list[RTCIceServer] | None = None,
+    ) -> str:
         """Send our offer to `talkback` and apply its answer; return the offer."""
         await self.pc.setLocalDescription(await self.pc.createOffer())
         messages: list[WebRTCMessage] = []
         offer = self.pc.localDescription.sdp
-        await talkback.handle_offer(session_id, offer, messages.append, [])
+        await talkback.handle_offer(
+            session_id, offer, messages.append, ice_servers or []
+        )
         assert isinstance(messages[0], WebRTCAnswer)
         await self.pc.setRemoteDescription(
             RTCSessionDescription(sdp=messages[0].answer, type="answer")
@@ -162,6 +182,55 @@ class OfferTests(unittest.TestCase):
         assert not offer_sends_audio(head + "m=audio 9 RTP 0\r\na=recvonly\r\n")
         assert not offer_sends_audio(head + "m=audio 0 RTP 0\r\na=sendrecv\r\n")
         assert not offer_sends_audio(head + video.replace("recvonly", "sendrecv"))
+
+
+LAN = [ipaddress.ip_network("192.168.1.0/24"), ipaddress.ip_network("2001:db8:1::/64")]
+# A STUN server that never answers (TEST-NET-1).
+SILENT_STUN = [RTCIceServer(urls="stun:192.0.2.1:3478")]
+
+
+def _candidate(address: str, kind: str = "host") -> str:
+    return f"candidate:1 1 udp 2122260223 {address} 50000 typ {kind}"
+
+
+class LanTests(unittest.TestCase):
+    """Telling from a browser's candidates whether it is on our network."""
+
+    def test_host_candidate_on_our_network_is_lan(self) -> None:
+        """An IPv4 or IPv6 host address in one of our networks decides it."""
+        assert browser_on_lan([_candidate("10.0.0.5"), _candidate("192.168.1.7")], LAN)
+        assert browser_on_lan([_candidate("2001:db8:1::42")], LAN)
+
+    def test_reflexive_candidate_or_end_without_a_match_is_remote(self) -> None:
+        """Host candidates come first, so a later srflx or the end decides."""
+        assert browser_on_lan([_candidate("10.0.0.5")], LAN) is None
+        assert browser_on_lan([_candidate("203.0.113.9", "srflx")], LAN) is False
+        assert browser_on_lan([_candidate("abc.local"), ""], LAN) is False
+        assert browser_on_lan(["end-of-candidates"], LAN) is False
+
+    def test_hidden_or_malformed_candidates_decide_nothing(self) -> None:
+        """Hidden mDNS names and garbage neither match nor end the wait."""
+        assert browser_on_lan([_candidate("0b1f.local"), "candidate:x"], LAN) is None
+        assert browser_on_lan([], LAN) is None
+
+    def test_link_local_networks_are_left_out(self) -> None:
+        """Every network has link-local addresses, so they can't tell."""
+        ip = type("IP", (), {})
+
+        def address(value: object, prefix: int) -> object:
+            result = ip()
+            result.ip, result.network_prefix = value, prefix
+            return result
+
+        adapter = type("Adapter", (), {})()
+        adapter.ips = [
+            address("192.168.1.2", 24),
+            address("169.254.3.4", 16),
+            address(("fe80::1", 0, 4), 64),
+            address(("2001:db8:1::2", 0, 0), 64),
+        ]
+        with patch("ifaddr.get_adapters", return_value=[adapter]):
+            assert lan_networks() == LAN
 
 
 @pytest.mark.usefixtures("socket_enabled")
@@ -223,6 +292,7 @@ class TalkbackTests(unittest.IsolatedAsyncioTestCase):
             host=HA_HOST,
             call_host=HA_HOST,
             rtp_endpoint=fake_rtp_endpoint,
+            trusted_hosts=[GATEWAY[0]],
         )
         self.transport = FakeTransport()
         self.server.transport = self.transport
@@ -255,6 +325,75 @@ class TalkbackTests(unittest.IsolatedAsyncioTestCase):
         self.browsers.append(browser)
         await browser.connect(self.talkback, session_id)
         return browser
+
+    async def test_lan_browser_is_answered_without_ice_servers(self) -> None:
+        """A browser on our network doesn't wait for STUN, and still connects."""
+        browser = Browser(talk=False)
+        self.browsers.append(browser)
+        with (
+            patch.object(
+                talkback,
+                "lan_networks",
+                return_value=[ipaddress.ip_network("127.0.0.0/8")],
+            ),
+            patch.object(
+                talkback, "RTCConfiguration", wraps=talkback.RTCConfiguration
+            ) as configuration,
+        ):
+            await browser.connect(self.talkback, "s1", SILENT_STUN)
+
+        assert configuration.call_args.kwargs["iceServers"] == []
+        await _until(lambda: browser.frames["video"])
+
+    async def test_remote_browser_keeps_the_ice_servers(self) -> None:
+        """A browser elsewhere is answered with the configured servers."""
+        browser = Browser(talk=False)
+        self.browsers.append(browser)
+        with (
+            patch.object(talkback, "lan_networks", return_value=[]),
+            # Fail the STUN query at once instead of after aioice's 5 s.
+            patch("aioice.ice.server_reflexive_candidate", side_effect=OSError),
+            patch.object(
+                talkback, "RTCConfiguration", wraps=talkback.RTCConfiguration
+            ) as configuration,
+        ):
+            await browser.connect(self.talkback, "s1", SILENT_STUN)
+
+        assert configuration.call_args.kwargs["iceServers"] == SILENT_STUN
+
+    async def _decide(self, offer: str = "v=0\r\n") -> asyncio.Task[bool]:
+        session = talkback._Session(  # noqa: SLF001
+            "s1", talking=True, video=self.talkback.video.track()
+        )
+        self.talkback._sessions["s1"] = session  # noqa: SLF001
+        decide = asyncio.create_task(
+            self.talkback._browser_on_lan(session, offer)  # noqa: SLF001
+        )
+        await asyncio.sleep(0.01)
+        return decide
+
+    async def test_trickled_lan_candidate_answers_early(self) -> None:
+        """A LAN candidate arriving after the offer ends the wait at once."""
+        with patch.object(talkback, "lan_networks", return_value=LAN):
+            decide = await self._decide()
+            started = time.monotonic()
+            add = asyncio.create_task(
+                self.talkback.add_candidate("s1", _candidate("192.168.1.7"), "0", 0)
+            )
+
+            assert await decide is True
+        assert time.monotonic() - started < talkback.LAN_CANDIDATE_WAIT
+        add.cancel()
+
+    async def test_undecided_browser_falls_back_to_the_servers(self) -> None:
+        """Without a deciding candidate the offer waits only briefly."""
+        with (
+            patch.object(talkback, "lan_networks", return_value=LAN),
+            patch.object(talkback, "LAN_CANDIDATE_WAIT", 0.05),
+        ):
+            decide = await self._decide()
+
+            assert await decide is False
 
     async def test_watching_gets_video_and_leaves_the_call_ringing(self) -> None:
         """A recvonly session sees the camera but never answers."""
@@ -354,6 +493,80 @@ class TalkbackTests(unittest.IsolatedAsyncioTestCase):
         await self.talkback.close_session("s1")
 
         assert self.transport.sent == []
+
+    async def test_failing_peer_connection_close_still_hangs_up(self) -> None:
+        """Hanging up comes first, so a failing pc.close() cannot skip it."""
+        await self._ring()
+        await self._browser("s1", talk=True)
+        await self._ack()
+
+        session = self.talkback._sessions["s1"]  # noqa: SLF001
+        with (
+            patch.object(session.pc, "close", side_effect=RuntimeError("boom")),
+            self.assertLogs("custom_components.sg_150", "ERROR"),
+        ):
+            await self.talkback.close_session("s1")
+
+        assert self._requests(b"BYE ") == 1
+        assert isinstance(self.events[-1], CallEnded)
+
+    async def test_hanging_peer_connection_close_times_out(self) -> None:
+        """A pc.close() that never returns is given up after CLOSE_TIMEOUT."""
+        await self._ring()
+        await self._browser("s1", talk=True)
+        await self._ack()
+
+        session = self.talkback._sessions["s1"]  # noqa: SLF001
+        never = asyncio.Event()
+        with (
+            patch.object(talkback, "CLOSE_TIMEOUT", 0.05),
+            patch.object(session.pc, "close", side_effect=never.wait),
+        ):
+            await self.talkback.close_session("s1")
+
+        assert self._requests(b"BYE ") == 1
+
+    async def test_failed_offer_setup_closes_the_session(self) -> None:
+        """An error while setting up the peer connection leaks no session."""
+        with (
+            patch.object(
+                talkback.RTCPeerConnection,
+                "addTransceiver",
+                side_effect=RuntimeError("boom"),
+            ),
+            pytest.raises(RuntimeError),
+        ):
+            await self.talkback.handle_offer("s1", "v=0", lambda _: None, [])
+
+        assert not self.talkback._sessions  # noqa: SLF001
+        assert not self.talkback.video.running
+
+    async def test_open_microphone_answers_a_new_ring(self) -> None:
+        """A talking session opened before the ring answers it."""
+        await self._browser("s1", talk=True)
+
+        await self._ring()
+        await _until(lambda: "SIP/2.0 200 OK" in self._statuses())
+        await self._ack()
+
+        assert not self.line.ringing
+        await self.talkback.close_session("s1")
+        assert self._requests(b"BYE ") == 1
+
+    async def test_second_call_is_attached_after_the_first_ends(self) -> None:
+        """When the first call with the door ends, a second one is bridged."""
+        await self.talkback.close()
+        await self.line.stop()
+        self._setup(auto_answer=True)
+        await self._ring("call-1")
+        await self._ack("call-1")
+        await self._ring("call-2")
+        await self._ack("call-2")
+        assert self.talkback._call.id == "call-1"  # noqa: SLF001
+
+        await self.server.handle_datagram(bye("call-1"), GATEWAY)
+
+        assert self.talkback._call.id == "call-2"  # noqa: SLF001
 
 
 if __name__ == "__main__":

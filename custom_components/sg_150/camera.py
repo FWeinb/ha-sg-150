@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 
 import httpx
@@ -19,7 +20,7 @@ from homeassistant.helpers.aiohttp_client import (
 from homeassistant.helpers.httpx_client import get_async_client
 
 from .const import CONF_TWO_WAY_AUDIO, LOGGER
-from .entity import SG150DeviceEntity
+from .entity import SG150DeviceEntity, async_add_device_entities
 from .line import CallEnded, CallStarted
 from .talkback import RTCIceServer, Talkback
 
@@ -44,6 +45,11 @@ TIMEOUT = 5
 # To avoid returning this, we wait for a few frames before returning a still image
 FRAME_WAIT_COUNT = 3
 
+# A frame without an end marker is dropped beyond this size.
+MAX_FRAME_BYTES = 4 * 1024 * 1024
+_SOI = b"\xff\xd8"
+_EOI = b"\xff\xd9"
+
 
 async def async_setup_entry(
     _: HomeAssistant,
@@ -51,45 +57,58 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the binary_sensor platform."""
-    if entry.runtime_data.coordinator.data is None:
-        LOGGER.warning("Coordinator data is None, skipping binary_sensor setup")
-        return
-
     # Create an entity for each device with an MJPEG stream
-    async_add_entities(
-        SG150Camera(
-            coordinator=entry.runtime_data.coordinator,
-            device=device,
-            url=url,
-            line=entry.runtime_data.line,
-            two_way_audio=entry.options.get(CONF_TWO_WAY_AUDIO, False),
-        )
-        for device in entry.runtime_data.coordinator.data.devices
-        if (url := device.mjpeg_stream_url) is not None
+    async_add_device_entities(
+        entry,
+        async_add_entities,
+        lambda device: (
+            [
+                SG150Camera(
+                    coordinator=entry.runtime_data.coordinator,
+                    device=device,
+                    url=url,
+                    line=entry.runtime_data.line,
+                    two_way_audio=entry.options.get(CONF_TWO_WAY_AUDIO, False),
+                )
+            ]
+            if (url := device.mjpeg_stream_url) is not None
+            else []
+        ),
     )
 
 
 async def _mjpeg_frames(stream: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
     """Split an MJPEG stream into its JPEG frames."""
-    data = b""
+    # `data` starts at a frame's start marker once one was found. `searched`
+    # bytes of it hold no end marker, so each chunk is only searched once.
+    data = bytearray()
+    searched = 0
 
     async for chunk in stream:
         data += chunk
 
         while True:
-            jpg_start = data.find(b"\xff\xd8")
-            if jpg_start == -1:
-                data = data[-1:]
-                break
+            if not data.startswith(_SOI):
+                jpg_start = data.find(_SOI)
+                if jpg_start == -1:
+                    del data[:-1]  # the last byte may start a marker
+                    searched = 0
+                    break
+                del data[:jpg_start]
+                searched = 0
 
-            jpg_end = data.find(b"\xff\xd9", jpg_start + 2)
+            jpg_end = data.find(_EOI, max(len(_SOI), searched - 1))
             if jpg_end == -1:
-                if jpg_start:
-                    data = data[jpg_start:]
+                searched = len(data)
+                if len(data) > MAX_FRAME_BYTES:
+                    LOGGER.debug("Dropping an MJPEG frame without an end marker")
+                    data.clear()
+                    searched = 0
                 break
 
-            yield data[jpg_start : jpg_end + 2]
-            data = data[jpg_end + 2 :]
+            yield bytes(data[: jpg_end + 2])
+            del data[: jpg_end + 2]
+            searched = 0
 
 
 async def _async_extract_image_from_mjpeg(
@@ -179,6 +198,7 @@ class SG150Camera(SG150DeviceEntity, Camera):  # pylint: disable=abstract-method
         """Yield the JPEG frames of the camera's MJPEG stream."""
         client = get_async_client(self.hass)
         async with client.stream("get", self._stream_url, timeout=TIMEOUT) as stream:
+            stream.raise_for_status()
             async for frame in _mjpeg_frames(stream.aiter_raw()):
                 yield frame
 
@@ -245,9 +265,12 @@ class SG150Camera(SG150DeviceEntity, Camera):  # pylint: disable=abstract-method
         """Return a still image response from the camera."""
         try:
             client = get_async_client(self.hass)
-            async with client.stream(
-                "get", self._stream_url, timeout=TIMEOUT
-            ) as stream:
+            # The httpx timeout applies per read; this bounds the whole snapshot.
+            async with (
+                asyncio.timeout(TIMEOUT),
+                client.stream("get", self._stream_url, timeout=TIMEOUT) as stream,
+            ):
+                stream.raise_for_status()
                 return await _async_extract_image_from_mjpeg(stream.aiter_raw())
 
         except TimeoutError:

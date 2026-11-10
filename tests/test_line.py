@@ -3,6 +3,7 @@
 import asyncio
 import re
 import unittest
+from unittest.mock import patch
 
 import pytest
 
@@ -46,6 +47,7 @@ class GatewayLineTests(unittest.IsolatedAsyncioTestCase):
             host=HA_HOST,
             call_host=HA_HOST,
             rtp_endpoint=fake_rtp_endpoint,
+            trusted_hosts=[GATEWAY[0]],
         )
         self.transport = FakeTransport()
         self.server.transport = self.transport
@@ -150,6 +152,19 @@ class GatewayLineTests(unittest.IsolatedAsyncioTestCase):
         assert isinstance(self.events[-1], CallStarted)
         assert self.line.calls["call-5"].rtp_session().codec == "PCMA"
 
+    async def test_refused_answer_raises_call_failed(self) -> None:
+        """Answering without a free RTP port fails instead of reporting success."""
+        self.line = self._ring_along_line()
+        await self._receive(invite("call-10", "*111", HA_NUMBER))
+
+        with (
+            patch.object(self.server, "_open_rtp", return_value=None),
+            pytest.raises(CallFailedError),
+        ):
+            await self.line.answer("call-10")
+
+        assert self._sent_status_lines()[-1] == "SIP/2.0 503 Service Unavailable"
+
     async def test_cancelled_ringing_call_cannot_be_answered(self) -> None:
         """A handset answering first (CANCEL) ends the ringing call."""
         self.line = self._ring_along_line()
@@ -171,15 +186,18 @@ class GatewayLineTests(unittest.IsolatedAsyncioTestCase):
         assert self._sent_status_lines()[-1] == "SIP/2.0 486 Busy Here"
         assert not self.line.ringing
 
-    async def test_stop_cancels_ring_timers(self) -> None:
-        """Stopping the line forgets ringing calls without rejecting them."""
+    async def test_stop_rejects_ringing_calls_once(self) -> None:
+        """Stopping the line rejects ringing calls and cancels their ring timers."""
         self.line = self._ring_along_line(ring_timeout=0.01)
         await self._receive(invite("call-8", "*111", HA_NUMBER))
 
         await self.line.stop()
         await asyncio.sleep(0.05)
 
-        assert self._sent_status_lines() == ["SIP/2.0 180 Ringing"]
+        assert self._sent_status_lines() == [
+            "SIP/2.0 180 Ringing",
+            "SIP/2.0 486 Busy Here",
+        ]
         assert not self.line.ringing
 
     async def test_outgoing_offer_is_sendrecv_with_both_codecs(self) -> None:
@@ -230,6 +248,29 @@ class GatewayLineTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         return task
+
+    async def test_stop_hangs_up_and_reports_ended_calls(self) -> None:
+        """Stopping the line sends BYE for established calls and emits CallEnded."""
+        call = await (await self._answer_outgoing("SIP/2.0 200 OK"))
+
+        await self.line.stop()
+
+        assert any(data.startswith(b"BYE ") for data, _ in self.transport.sent)
+        assert self.events[-1] == CallEnded(call)
+        assert not self.line.calls
+
+    async def test_silent_call_ends(self) -> None:
+        """A call whose audio stopped arriving ends with CallEnded."""
+        self.server.rtp_timeout = 0.05
+        await self._receive(invite("call-9", "*111", HA_NUMBER))
+        await self._receive(ack("call-9"))
+        assert isinstance(self.events[-1], CallStarted)
+
+        await asyncio.sleep(0.15)
+
+        assert isinstance(self.events[-1], CallEnded)
+        assert self.events[-1].call.id == "call-9"
+        assert not self.line.calls
 
     async def test_outgoing_call_and_hangup(self) -> None:
         """An answered outgoing call is tracked until it is hung up."""

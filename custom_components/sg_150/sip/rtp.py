@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import logging
 import random
+import time
 from collections import deque
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -21,7 +22,7 @@ import numpy as np
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-logger = logging.getLogger("sip-server")
+logger = logging.getLogger(__name__)
 
 PCMU = 0
 PCMA = 8
@@ -38,6 +39,9 @@ MAX_LIVE_BACKLOG = 10
 _SILENT_FRAME = np.zeros(SAMPLES_PER_FRAME, dtype=np.int16)
 # Ticks this far behind schedule are skipped instead of sent in a burst.
 MAX_TICK_LAG = 5
+# A running call that received no RTP for this many seconds is considered dead,
+# for example because the gateway rebooted or its BYE was lost.
+RTP_TIMEOUT = 60.0
 
 
 # ============================================================
@@ -258,6 +262,12 @@ class RtpSession(asyncio.DatagramProtocol):
         self._drained.set()
         self._listeners: list[FrameListener] = []
         self._task: asyncio.Task | None = None
+        # Called once when nothing was received for `receive_timeout` seconds.
+        self.on_timeout: Callable[[], None] | None = None
+        self.receive_timeout = RTP_TIMEOUT
+        self._last_received = 0.0
+        self._timed_out = False
+        self._warned_frame_size = False
 
     @property
     def payload_type(self) -> int:
@@ -291,8 +301,26 @@ class RtpSession(asyncio.DatagramProtocol):
     def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:
         """Buffer a received audio packet."""
         packet = RtpPacket.parse(data)
-        if packet is None or packet.payload_type != self.payload_type:
-            return  # not RTP, or telephone-event and comfort noise
+        if packet is None:
+            return
+        if self.remote is not None and addr[0] != self.remote[0]:
+            # Not from the other side. Only the IP counts: the source port
+            # may differ from the one in the SDP.
+            return
+        self._last_received = time.monotonic()
+        if packet.payload_type != self.payload_type:
+            return  # telephone-event and comfort noise
+        if len(packet.payload) != SAMPLES_PER_FRAME:
+            # Other packet times would skew the 20 ms playout.
+            if not self._warned_frame_size:
+                self._warned_frame_size = True
+                logger.warning(
+                    "Dropping RTP packets with %d instead of %d samples from %s",
+                    len(packet.payload),
+                    SAMPLES_PER_FRAME,
+                    addr,
+                )
+            return
         if self.remote is None:
             self.remote = addr
         self.jitter.push(packet.sequence, packet.payload)
@@ -386,11 +414,22 @@ class RtpSession(asyncio.DatagramProtocol):
                 except Exception:
                     logger.exception("Error in RTP frame listener")
 
+        if (
+            self.on_timeout is not None
+            and not self._timed_out
+            and time.monotonic() - self._last_received > self.receive_timeout
+        ):
+            self._timed_out = True
+            self.on_timeout()
+
     async def _run(self) -> None:
         loop = asyncio.get_running_loop()
         next_tick = loop.time()
         while True:
-            self.tick()
+            try:
+                self.tick()
+            except Exception:
+                logger.exception("Error in RTP tick")  # keep the clock running
             next_tick += PTIME
             lag = loop.time() - next_tick
             if lag > MAX_TICK_LAG * PTIME:
@@ -400,6 +439,7 @@ class RtpSession(asyncio.DatagramProtocol):
     def start(self) -> None:
         """Start the 20 ms clock."""
         if self._task is None:
+            self._last_received = time.monotonic()
             self._task = asyncio.create_task(self._run(), name="sip-rtp-clock")
 
     def close(self) -> None:

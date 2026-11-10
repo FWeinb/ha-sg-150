@@ -5,8 +5,10 @@ import io
 import unittest
 
 import numpy as np
+import pytest
 import soundfile as sf
 
+from custom_components.sg_150.sip import minisip
 from custom_components.sg_150.sip.minisip import (
     MiniSIPServer,
     convert_audio_to_pcma,
@@ -111,6 +113,27 @@ class MiniSIPAudioTests(unittest.IsolatedAsyncioTestCase):
 
         assert len(pcma) == 160
         assert all(0 <= byte <= 255 for byte in pcma)
+
+    async def test_resampling_keeps_speech_and_filters_aliases(self) -> None:
+        """44.1 kHz audio keeps a 1 kHz tone and drops one above 4 kHz."""
+        t = np.arange(44100) / 44100
+
+        def resampled_peak(frequency: int) -> float:
+            tone = (10000 * np.sin(2 * np.pi * frequency * t)).astype(np.int16)
+            wav_buffer = io.BytesIO()
+            sf.write(wav_buffer, tone, 44100, format="WAV", subtype="PCM_16")
+            pcm = minisip.convert_audio_to_pcm(wav_buffer.getvalue(), "audio/wav")
+            assert abs(len(pcm) - 8000) <= 160
+            return np.abs(pcm[400:-400]).max()  # skip the filter's edges
+
+        assert resampled_peak(1000) > 9000
+        # A 6 kHz tone would alias to 2 kHz at nearly full level without a filter.
+        assert resampled_peak(6000) < 1000
+
+    async def test_undecodable_audio_raises_value_error(self) -> None:
+        """Garbage with a supported mime type is a ValueError naming the type."""
+        with pytest.raises(ValueError, match="audio/wav"):
+            minisip.convert_audio_to_pcm(b"not a wav file", "audio/wav")
 
     async def test_convert_audio_to_pcma_from_mp3(self) -> None:
         """Test converting audio from MP3 MIME data to PCMA."""

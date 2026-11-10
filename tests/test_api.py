@@ -1,6 +1,8 @@
 """Tests for the SG150 HTTP API client."""
 
+import asyncio
 import base64
+import json
 import unittest
 
 import aiohttp
@@ -14,6 +16,7 @@ from custom_components.sg_150.api import (
     SG150ApiClientCommunicationError,
     SG150ApiClientError,
 )
+from tests.utils import FIXTURES
 
 TOKEN_RESPONSE = {
     "access_token": "token",
@@ -118,6 +121,137 @@ class ApiClientTests(unittest.IsolatedAsyncioTestCase):
 
         assert token_requests == 1
         assert seen_authorization == ["Bearer token", "Bearer token"]
+
+    async def test_rejected_cached_token_is_renewed_once(self) -> None:
+        """A 401 on a cached token fetches a new token and repeats the request."""
+        token_requests = 0
+        light_statuses = [200, 401, 200]
+
+        async def token(_: web.Request) -> web.Response:
+            nonlocal token_requests
+            token_requests += 1
+            return web.json_response(
+                TOKEN_RESPONSE | {"access_token": f"token-{token_requests}"}
+            )
+
+        async def light(_: web.Request) -> web.Response:
+            return web.json_response({}, status=light_statuses.pop(0))
+
+        app = web.Application()
+        app.router.add_post("/api/op/v1.0/oauth/token", token)
+        app.router.add_post("/api/op/v1.0/in-home/switchLightRequests", light)
+        client = await self._client_for(app)
+
+        await client.async_trigger_light_switch()
+        await client.async_trigger_light_switch()
+
+        assert token_requests == 2
+        assert not light_statuses
+
+    async def test_rejected_renewed_token_raises_authentication_error(
+        self,
+    ) -> None:
+        """A request rejected with a cached and a fresh token is an auth error."""
+        token_requests = 0
+        light_statuses = [200, 401, 401]
+
+        async def token(_: web.Request) -> web.Response:
+            nonlocal token_requests
+            token_requests += 1
+            return web.json_response(TOKEN_RESPONSE)
+
+        async def light(_: web.Request) -> web.Response:
+            return web.json_response({}, status=light_statuses.pop(0))
+
+        app = web.Application()
+        app.router.add_post("/api/op/v1.0/oauth/token", token)
+        app.router.add_post("/api/op/v1.0/in-home/switchLightRequests", light)
+        client = await self._client_for(app)
+
+        await client.async_trigger_light_switch()
+        with pytest.raises(SG150ApiClientAuthenticationError):
+            await client.async_trigger_light_switch()
+
+        assert token_requests == 2
+        assert not light_statuses
+
+    async def test_parallel_requests_share_one_token_request(self) -> None:
+        """Concurrent requests without a token wait for one token request."""
+        token_requests = 0
+
+        async def token(_: web.Request) -> web.Response:
+            nonlocal token_requests
+            token_requests += 1
+            await asyncio.sleep(0.01)
+            return web.json_response(TOKEN_RESPONSE)
+
+        async def light(_: web.Request) -> web.Response:
+            return web.json_response({})
+
+        app = web.Application()
+        app.router.add_post("/api/op/v1.0/oauth/token", token)
+        app.router.add_post("/api/op/v1.0/in-home/switchLightRequests", light)
+        client = await self._client_for(app)
+
+        await asyncio.gather(*(client.async_trigger_light_switch() for _ in range(3)))
+
+        assert token_requests == 1
+
+    async def test_unexpected_responses_raise_client_error(self) -> None:
+        """Replies that do not fit the models raise SG150ApiClientError."""
+
+        async def token(_: web.Request) -> web.Response:
+            return web.json_response({"token_type": "bearer"})
+
+        app = web.Application()
+        app.router.add_post("/api/op/v1.0/oauth/token", token)
+        client = await self._client_for(app)
+
+        with pytest.raises(SG150ApiClientError, match="token response"):
+            await client.authenticate()
+
+
+@pytest.mark.usefixtures("socket_enabled")
+class DeviceListTests(unittest.IsolatedAsyncioTestCase):
+    """Validating the gateway's device list."""
+
+    async def _client_for(self, devices: object) -> SG150ApiClient:
+        async def token(_: web.Request) -> web.Response:
+            return web.json_response(TOKEN_RESPONSE)
+
+        async def system_devices(_: web.Request) -> web.Response:
+            return web.json_response(devices)
+
+        app = web.Application()
+        app.router.add_post("/api/op/v1.0/oauth/token", token)
+        app.router.add_get("/api/op/v1.0/system/devices", system_devices)
+        return await client_for(self, app)
+
+    async def test_device_with_unexpected_data_is_skipped(self) -> None:
+        """A device whose known capability changed does not hide the others."""
+        payload = json.loads((FIXTURES / "system_devices.json").read_text())
+        broken = payload["devices"][0]
+        for capability in broken["capabilities"]:
+            if capability["type"] == "PHONE_ENDPOINT":
+                capability["properties"] = {"isDoor": "maybe"}
+        client = await self._client_for(payload)
+
+        with self.assertLogs("custom_components.sg_150", "WARNING") as logs:
+            devices = (await client.async_get_in_home_callable()).devices
+            await client.async_get_in_home_callable()
+
+        ids = [device.id for device in devices]
+        assert broken["id"] not in ids
+        assert len(ids) == len(payload["devices"]) - 1
+        assert len(logs.records) == 1
+        assert broken["id"] in logs.output[0]
+
+    async def test_unexpected_device_list_raises_client_error(self) -> None:
+        """A reply without a device list raises SG150ApiClientError."""
+        client = await self._client_for(["not", "a", "device", "list"])
+
+        with pytest.raises(SG150ApiClientError, match="device list"):
+            await client.async_get_in_home_callable()
 
 
 @pytest.mark.usefixtures("socket_enabled")

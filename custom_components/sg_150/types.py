@@ -6,18 +6,18 @@ These are used as return types of various API-Calls
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, RootModel
+from pydantic import BaseModel, ConfigDict, Discriminator, Field, RootModel, Tag
 
 
 class SG150MaschineInfo(BaseModel):
     """API Maschine Info."""
 
-    machineModel: str  # noqa: N815
+    machineModel: str | None = None  # noqa: N815
     machineName: str  # noqa: N815
     machineRevision: str  # noqa: N815
-    productionBatch: int  # noqa: N815
+    productionBatch: int | None = None  # noqa: N815
     macAddress: str  # noqa: N815
 
 
@@ -41,8 +41,8 @@ class SG150DeviceCallNumber(BaseModel):
 class SG150PbxSystem(BaseModel):
     """API SG150PbxSystem."""
 
-    id: str
-    name: str
+    id: str | None = None
+    name: str | None = None
     type: str
     externalExtension: SG150DeviceCallNumber  # noqa: N815
 
@@ -79,12 +79,12 @@ class SG150DeviceCapabilityCTIPhone(BaseModel):
 class SG150DeviceCapabilityInHomeProperties(BaseModel):
     """API SG150DeviceCapabilityInHomeProperties."""
 
-    inHomeAddress: dict  # noqa: N815
-    description: str
+    inHomeAddress: dict | None = None  # noqa: N815
+    description: str | None = None
     deviceType: str  # noqa: N815
-    hasVideo: bool  # noqa: N815
-    hasAudio: bool  # noqa: N815
-    automationItems: list[dict]  # noqa: N815
+    hasVideo: bool | None = None  # noqa: N815
+    hasAudio: bool | None = None  # noqa: N815
+    automationItems: list[dict] | None = None  # noqa: N815
 
 
 class SG150DeviceCapabilityInHome(BaseModel):
@@ -112,8 +112,8 @@ class SG150AssignedAddress(BaseModel):
 class SG150DeviceCapabilityInHomeVirtualProperties(BaseModel):
     """API SG150DeviceCapabilityInHomeVirtualProperties."""
 
-    addressAssigned: bool  # noqa: N815
-    assignedAddress: SG150AssignedAddress | None  # noqa: N815
+    addressAssigned: bool | None = None  # noqa: N815
+    assignedAddress: SG150AssignedAddress | None = None  # noqa: N815
 
 
 class SG150DeviceCapabilityInHomeVirtual(BaseModel):
@@ -126,8 +126,9 @@ class SG150DeviceCapabilityInHomeVirtual(BaseModel):
 class SG150DeviceCapabilityVideoExtractionProperties(BaseModel):
     """API SG150DeviceCapabilityVideoExtractionProperties."""
 
-    enabled: bool
-    type: Literal["MJPEG_STREAM", "SNAPSHOT"]
+    enabled: bool | None = None
+    # Known values are MJPEG_STREAM and SNAPSHOT; kept open for new firmware.
+    type: str
     url: str
 
 
@@ -141,7 +142,7 @@ class SG150DeviceCapabilityVideoExtraction(BaseModel):
 class SG150DeviceCapabilityVideoSenderProperties(BaseModel):
     """API SG150DeviceCapabilityVideoSenderProperties."""
 
-    cameraId: str  # noqa: N815
+    cameraId: str | None = None  # noqa: N815
 
 
 class SG150DeviceCapabilityVideoSender(BaseModel):
@@ -165,7 +166,7 @@ class SG150DeviceCapabilitySusApp(BaseModel):
 class SG150DeviceCapabilityAutomationTileProperties(BaseModel):
     """API SG150DeviceCapabilityAutomationTileProperties."""
 
-    assignedTiles: list[dict]  # noqa: N815
+    assignedTiles: list[dict] | None = None  # noqa: N815
 
 
 class SG150DeviceCapabilityAutomationTile(BaseModel):
@@ -178,8 +179,8 @@ class SG150DeviceCapabilityAutomationTile(BaseModel):
 class SG150DeviceCapabilityAutomationProperties(BaseModel):
     """API SG150DeviceCapabilityAutomationProperties."""
 
-    controllerId: str  # noqa: N815
-    automationItems: list[dict]  # noqa: N815
+    controllerId: str | None = None  # noqa: N815
+    automationItems: list[dict] | None = None  # noqa: N815
 
 
 class SG150DeviceCapabilityAutomation(BaseModel):
@@ -189,20 +190,53 @@ class SG150DeviceCapabilityAutomation(BaseModel):
     properties: SG150DeviceCapabilityAutomationProperties
 
 
+class SG150DeviceCapabilityUnknown(BaseModel):
+    """A capability type this integration does not know, kept as is."""
+
+    model_config = ConfigDict(extra="allow")
+
+    type: str
+
+
+_KNOWN_CAPABILITIES = frozenset(
+    {
+        "PHONE_ENDPOINT",
+        "CTI_PHONE",
+        "IN_HOME",
+        "IN_HOME_VIRTUAL",
+        "VIDEO_EXTRACTION",
+        "VIDEO_SENDER",
+        "SUS_APP",
+        "AUTOMATION",
+        "AUTOMATION_TILE",
+    }
+)
+
+
+def _capability_tag(value: Any) -> str:
+    """Return the capability's type, or UNKNOWN for one added by new firmware."""
+    kind = (
+        value.get("type") if isinstance(value, dict) else getattr(value, "type", None)
+    )
+    return kind if kind in _KNOWN_CAPABILITIES else "UNKNOWN"
+
+
 class SG150DeviceCapability(RootModel):
     """API SG150DeviceCapability."""
 
-    root: (
-        SG150DeviceCapabilityPhoneEndpoint
-        | SG150DeviceCapabilityCTIPhone
-        | SG150DeviceCapabilityInHome
-        | SG150DeviceCapabilityInHomeVirtual
-        | SG150DeviceCapabilityVideoExtraction
-        | SG150DeviceCapabilityVideoSender
-        | SG150DeviceCapabilitySusApp
-        | SG150DeviceCapabilityAutomation
-        | SG150DeviceCapabilityAutomationTile
-    ) = Field(discriminator="type")
+    root: Annotated[
+        Annotated[SG150DeviceCapabilityPhoneEndpoint, Tag("PHONE_ENDPOINT")]
+        | Annotated[SG150DeviceCapabilityCTIPhone, Tag("CTI_PHONE")]
+        | Annotated[SG150DeviceCapabilityInHome, Tag("IN_HOME")]
+        | Annotated[SG150DeviceCapabilityInHomeVirtual, Tag("IN_HOME_VIRTUAL")]
+        | Annotated[SG150DeviceCapabilityVideoExtraction, Tag("VIDEO_EXTRACTION")]
+        | Annotated[SG150DeviceCapabilityVideoSender, Tag("VIDEO_SENDER")]
+        | Annotated[SG150DeviceCapabilitySusApp, Tag("SUS_APP")]
+        | Annotated[SG150DeviceCapabilityAutomation, Tag("AUTOMATION")]
+        | Annotated[SG150DeviceCapabilityAutomationTile, Tag("AUTOMATION_TILE")]
+        | Annotated[SG150DeviceCapabilityUnknown, Tag("UNKNOWN")],
+        Discriminator(_capability_tag),
+    ]
 
 
 def _find_capability[T: BaseModel](
@@ -232,7 +266,8 @@ class SG150Device(BaseModel):
 
     id: str
     name: str
-    type: SG150DeviceType
+    # Without left_to_right, pydantic's smart mode would prefer the plain str.
+    type: SG150DeviceType | str = Field(union_mode="left_to_right")
     capabilities: list[SG150DeviceCapability]
 
     @property
@@ -292,9 +327,9 @@ class OAuthTokenResponse(BaseModel):
     """API OAuthTokenResponse."""
 
     access_token: str
-    token_type: str
+    token_type: str | None = None
     expires_in: int
-    refresh_token: str
+    refresh_token: str | None = None
 
 
 class SG150StoredImage(BaseModel):
