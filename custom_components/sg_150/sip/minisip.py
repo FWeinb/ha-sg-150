@@ -1012,13 +1012,16 @@ class MiniSIPServer:
         message["Contact"] = self._contact(message.get("To"))
         message["To"] = f"{message.get('To')};tag={new_tag()}"
 
+        ringing = IncomingCallDecision.RING in decisions
+        if ringing:
+            # Before anything can yield, so a listener's task can answer it.
+            self.ringing[call_id] = invite
         ringing_resp = build_response(180, "Ringing", message)
         self._send(ringing_resp, addr)
         await self._fire_event("on_call_ringing", call_id, addr)
         log_sip_event("CALL_RINGING_SENT", addr=f"{addr}", call_id=call_id)
 
-        if IncomingCallDecision.RING in decisions:
-            self.ringing[call_id] = invite
+        if ringing:
             return
 
         await self._answer_invite(invite)

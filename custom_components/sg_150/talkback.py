@@ -23,7 +23,7 @@ import numpy as np
 from homeassistant.components.camera import WebRTCAnswer, WebRTCError
 
 from .const import LOGGER
-from .line import CallEnded, CallStarted, NotRingingError
+from .line import CallEnded, CallStarted, IncomingCall, NotRingingError
 from .sip.rtp import PTIME, SAMPLE_RATE, SAMPLES_PER_FRAME
 
 # aiortc only uses google-crc32c to checksum SCTP (data channel) packets, and the
@@ -58,6 +58,8 @@ if TYPE_CHECKING:
     type JpegSource = Callable[[], AsyncIterator[bytes]]
 
 VIDEO_FPS = 15
+# Closing a peer connection may hang on a dead network; give up after this.
+CLOSE_TIMEOUT = 5.0
 VIDEO_BITRATE = 800_000
 VIDEO_TIME_BASE = fractions.Fraction(1, 90000)
 # A keyframe every two seconds, so a viewer recovers quickly from packet loss.
@@ -360,11 +362,10 @@ class Talkback:
         # Whether a session talked during the current call, so closing the last
         # talking session hangs it up. Calls nobody talked on are left alone.
         self._talked = False
+        # Tasks answering a ring for an open microphone, cancelled by close().
+        self._tasks: set[asyncio.Task] = set()
         self._unsubscribe_line = line.subscribe(self._on_line_event)
-        for call in line.calls.values():
-            if call.involves(device_id):
-                self._attach(call)
-                break
+        self._attach_to_a_call()
 
     @property
     def video(self) -> VideoSource:
@@ -383,6 +384,26 @@ class Talkback:
             and event.call.id == self._call.id
         ):
             self._detach()
+            # A second call with this door may still be running.
+            self._attach_to_a_call(skip=event.call.id)
+        elif (
+            isinstance(event, IncomingCall)
+            and not event.answered
+            and self._talkers
+            and event.call.involves(self._device_id)
+        ):
+            # An open microphone answers the ring, like pressing talk would.
+            task = asyncio.create_task(
+                self._answer_ringing_call(), name=f"talkback-answer-{event.call.id}"
+            )
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
+
+    def _attach_to_a_call(self, skip: str | None = None) -> None:
+        for call in self._line.calls.values():
+            if call.id != skip and call.involves(self._device_id):
+                self._attach(call)
+                return
 
     def _attach(self, call: Call) -> None:
         try:
@@ -441,33 +462,35 @@ class Talkback:
             session_id, talking=offer_sends_audio(offer_sdp), video=self._video.track()
         )
         self._sessions[session_id] = session
-        pc = session.pc = RTCPeerConnection(RTCConfiguration(iceServers=ice_servers))
-
-        audio = pc.addTransceiver(
-            session.audio, direction="sendrecv" if session.talking else "sendonly"
-        )
-        audio.setCodecPreferences(
-            _codecs("audio", ["audio/PCMA", "audio/PCMU", "audio/opus"])
-        )
-        video = pc.addTransceiver(session.video, direction="sendonly")
-        video.setCodecPreferences(_codecs("video", ["video/VP8"]))
-
-        @pc.on("track")
-        def on_track(track: MediaStreamTrack) -> None:
-            if track.kind == "audio" and session.talking:
-                task = asyncio.create_task(self._read_microphone(session, track))
-                session.tasks.add(task)
-                task.add_done_callback(session.tasks.discard)
-
-        @pc.on("connectionstatechange")
-        async def on_connection_state_change() -> None:
-            if pc.connectionState == "failed" and session_id in self._sessions:
-                send_message(
-                    WebRTCError("webrtc_failed", "The WebRTC connection failed")
-                )
-                await self.close_session(session_id)
-
         try:
+            pc = session.pc = RTCPeerConnection(
+                RTCConfiguration(iceServers=ice_servers)
+            )
+
+            audio = pc.addTransceiver(
+                session.audio, direction="sendrecv" if session.talking else "sendonly"
+            )
+            audio.setCodecPreferences(
+                _codecs("audio", ["audio/PCMA", "audio/PCMU", "audio/opus"])
+            )
+            video = pc.addTransceiver(session.video, direction="sendonly")
+            video.setCodecPreferences(_codecs("video", ["video/VP8"]))
+
+            @pc.on("track")
+            def on_track(track: MediaStreamTrack) -> None:
+                if track.kind == "audio" and session.talking:
+                    task = asyncio.create_task(self._read_microphone(session, track))
+                    session.tasks.add(task)
+                    task.add_done_callback(session.tasks.discard)
+
+            @pc.on("connectionstatechange")
+            async def on_connection_state_change() -> None:
+                if pc.connectionState == "failed" and session_id in self._sessions:
+                    send_message(
+                        WebRTCError("webrtc_failed", "The WebRTC connection failed")
+                    )
+                    await self.close_session(session_id)
+
             await pc.setRemoteDescription(
                 RTCSessionDescription(sdp=offer_sdp, type="offer")
             )
@@ -518,18 +541,34 @@ class Talkback:
         session = self._sessions.pop(session_id, None)
         if session is None:
             return
-        await session.close()
-        if session_id not in self._talkers:
-            return
-        self._talkers.remove(session_id)
-        if not self._talkers and self._talked and (call := self._call) is not None:
-            LOGGER.debug("Last talking session closed, hanging up %s", call.id)
-            with contextlib.suppress(ValueError):  # it ended meanwhile
-                await call.hangup()
+        was_talking = session_id in self._talkers
+        if was_talking:
+            self._talkers.remove(session_id)
+        try:
+            # Hang up first, so a peer connection that fails to close can't
+            # keep the door line open.
+            if (
+                was_talking
+                and not self._talkers
+                and self._talked
+                and (call := self._call) is not None
+            ):
+                LOGGER.debug("Last talking session closed, hanging up %s", call.id)
+                with contextlib.suppress(ValueError):  # it ended meanwhile
+                    await call.hangup()
+        finally:
+            try:
+                await asyncio.wait_for(session.close(), CLOSE_TIMEOUT)
+            except TimeoutError:
+                LOGGER.warning("Closing WebRTC session %s timed out", session_id)
+            except Exception:  # noqa: BLE001
+                LOGGER.exception("Error closing WebRTC session %s", session_id)
 
     async def close(self) -> None:
         """Close all sessions without hanging up, such as on unload."""
         self._unsubscribe_line()
+        for task in self._tasks:
+            task.cancel()
         self._detach()
         self._talkers.clear()
         for session_id in list(self._sessions):

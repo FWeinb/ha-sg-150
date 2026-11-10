@@ -22,6 +22,7 @@ from aiortc import RTCConfiguration, RTCPeerConnection, RTCSessionDescription
 from aiortc.mediastreams import MediaStreamError, MediaStreamTrack
 from homeassistant.components.camera import WebRTCAnswer, WebRTCMessage
 
+from custom_components.sg_150 import talkback
 from custom_components.sg_150.line import CallEnded, GatewayLine, LineEvent
 from custom_components.sg_150.sip.minisip import MiniSIPServer
 from custom_components.sg_150.sip.rtp import (
@@ -39,6 +40,7 @@ from tests.sip_messages import (
     SIP_PASSWORD,
     SIP_USER,
     ack,
+    bye,
     invite,
 )
 from tests.utils import FakeTransport, fake_rtp_endpoint, load_devices
@@ -355,6 +357,80 @@ class TalkbackTests(unittest.IsolatedAsyncioTestCase):
         await self.talkback.close_session("s1")
 
         assert self.transport.sent == []
+
+    async def test_failing_peer_connection_close_still_hangs_up(self) -> None:
+        """Hanging up comes first, so a failing pc.close() cannot skip it."""
+        await self._ring()
+        await self._browser("s1", talk=True)
+        await self._ack()
+
+        session = self.talkback._sessions["s1"]  # noqa: SLF001
+        with (
+            patch.object(session.pc, "close", side_effect=RuntimeError("boom")),
+            self.assertLogs("custom_components.sg_150", "ERROR"),
+        ):
+            await self.talkback.close_session("s1")
+
+        assert self._requests(b"BYE ") == 1
+        assert isinstance(self.events[-1], CallEnded)
+
+    async def test_hanging_peer_connection_close_times_out(self) -> None:
+        """A pc.close() that never returns is given up after CLOSE_TIMEOUT."""
+        await self._ring()
+        await self._browser("s1", talk=True)
+        await self._ack()
+
+        session = self.talkback._sessions["s1"]  # noqa: SLF001
+        never = asyncio.Event()
+        with (
+            patch.object(talkback, "CLOSE_TIMEOUT", 0.05),
+            patch.object(session.pc, "close", side_effect=never.wait),
+        ):
+            await self.talkback.close_session("s1")
+
+        assert self._requests(b"BYE ") == 1
+
+    async def test_failed_offer_setup_closes_the_session(self) -> None:
+        """An error while setting up the peer connection leaks no session."""
+        with (
+            patch.object(
+                talkback.RTCPeerConnection,
+                "addTransceiver",
+                side_effect=RuntimeError("boom"),
+            ),
+            pytest.raises(RuntimeError),
+        ):
+            await self.talkback.handle_offer("s1", "v=0", lambda _: None, [])
+
+        assert not self.talkback._sessions  # noqa: SLF001
+        assert not self.talkback.video.running
+
+    async def test_open_microphone_answers_a_new_ring(self) -> None:
+        """A talking session opened before the ring answers it."""
+        await self._browser("s1", talk=True)
+
+        await self._ring()
+        await _until(lambda: "SIP/2.0 200 OK" in self._statuses())
+        await self._ack()
+
+        assert not self.line.ringing
+        await self.talkback.close_session("s1")
+        assert self._requests(b"BYE ") == 1
+
+    async def test_second_call_is_attached_after_the_first_ends(self) -> None:
+        """When the first call with the door ends, a second one is bridged."""
+        await self.talkback.close()
+        await self.line.stop()
+        self._setup(auto_answer=True)
+        await self._ring("call-1")
+        await self._ack("call-1")
+        await self._ring("call-2")
+        await self._ack("call-2")
+        assert self.talkback._call.id == "call-1"  # noqa: SLF001
+
+        await self.server.handle_datagram(bye("call-1"), GATEWAY)
+
+        assert self.talkback._call.id == "call-2"  # noqa: SLF001
 
 
 if __name__ == "__main__":
