@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 from typing import TYPE_CHECKING, Any
 
 import voluptuous as vol
@@ -233,16 +234,47 @@ class SG150OptionsFlowHandler(config_entries.OptionsFlowWithReload):
         )
 
 
-def validate_options(options: Mapping[str, Any]) -> dict[str, str]:
-    """Return form errors for the options, if any."""
+def _port(value: object) -> int | None:
     try:
-        low = int(options.get(CONF_RTP_PORT_MIN, DEFAULT_RTP_PORT_MIN))
-        high = int(options.get(CONF_RTP_PORT_MAX, DEFAULT_RTP_PORT_MAX))
+        return int(str(value).strip())
     except ValueError:
-        return {"base": "rtp_ports"}
-    if not MIN_RTP_PORT <= low <= high <= MAX_RTP_PORT:
-        return {"base": "rtp_ports"}
-    return {}
+        return None
+
+
+def validate_options(options: Mapping[str, Any]) -> dict[str, str]:
+    """Return form errors for the options, if any, by field."""
+    errors: dict[str, str] = {}
+    low = _port(options.get(CONF_RTP_PORT_MIN, DEFAULT_RTP_PORT_MIN))
+    high = _port(options.get(CONF_RTP_PORT_MAX, DEFAULT_RTP_PORT_MAX))
+    rtp_ports = (
+        range(low, high + 1)
+        if low is not None
+        and high is not None
+        and MIN_RTP_PORT <= low <= high <= MAX_RTP_PORT
+        else None
+    )
+    if rtp_ports is None:
+        errors["base"] = "rtp_ports"
+
+    if CONF_SIP_PORT in options:
+        sip_port = _port(options[CONF_SIP_PORT])
+        if sip_port is None or not 1 <= sip_port <= MAX_RTP_PORT:
+            errors[CONF_SIP_PORT] = "sip_port"
+        elif rtp_ports is not None and sip_port in rtp_ports:
+            # Both are UDP, so they cannot share a port.
+            errors[CONF_SIP_PORT] = "sip_port_in_rtp_range"
+
+    if CONF_SIP_CALLER_IP in options:
+        # The SDP announces this address for call audio as IN IP4.
+        try:
+            ipaddress.IPv4Address(str(options[CONF_SIP_CALLER_IP]).strip())
+        except ValueError:
+            errors[CONF_SIP_CALLER_IP] = "caller_ip"
+
+    for key in (CONF_SIP_USER, CONF_SIP_NUMBER):
+        if key in options and not str(options[key]).strip():
+            errors[key] = "required"
+    return errors
 
 
 async def get_options_schema(entry: dict | None = None) -> dict:

@@ -13,7 +13,7 @@ import dns.rdata
 import dns.rdataclass
 import dns.rdatatype
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
-from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.exceptions import ConfigEntryError, ConfigEntryNotReady
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.loader import async_get_loaded_integration
@@ -97,14 +97,21 @@ async def async_setup_entry(
 
     users = {}
     users[entry.options.get(CONF_SIP_USER)] = entry.options.get(CONF_SIP_PASSWORD)
+    # Entries store the ports as strings, as entered in the options form.
+    try:
+        sip_port = int(entry.options.get(CONF_SIP_PORT))
+        rtp_ports = range(
+            int(entry.options.get(CONF_RTP_PORT_MIN, DEFAULT_RTP_PORT_MIN)),
+            int(entry.options.get(CONF_RTP_PORT_MAX, DEFAULT_RTP_PORT_MAX)) + 1,
+        )
+    except (TypeError, ValueError) as err:
+        msg = f"Invalid SIP or RTP port in the options, reconfigure them: {err}"
+        raise ConfigEntryError(msg) from err
     server = MiniSIPServer(
         call_host=entry.options.get(CONF_SIP_CALLER_IP),
         users=users,
-        port=int(entry.options.get(CONF_SIP_PORT)),
-        rtp_ports=range(
-            int(entry.options.get(CONF_RTP_PORT_MIN, DEFAULT_RTP_PORT_MIN)),
-            int(entry.options.get(CONF_RTP_PORT_MAX, DEFAULT_RTP_PORT_MAX)) + 1,
-        ),
+        port=sip_port,
+        rtp_ports=rtp_ports,
         # Accept the gateway's calls before it registers again after a restart.
         trusted_hosts=[entry.data.get(CONF_HOST_ADDRESS)],
     )

@@ -58,7 +58,11 @@
             "auth": "Username/Password is wrong.",
             "connection": "Unable to connect to the server.",
             "unknown": "Unexpected error",
-            "rtp_ports": "The RTP ports must be numbers between 1024 and 65535, and the first must not be above the last."
+            "rtp_ports": "The RTP ports must be numbers between 1024 and 65535, and the first must not be above the last.",
+            "sip_port": "The SIP port must be a number between 1 and 65535.",
+            "sip_port_in_rtp_range": "The SIP port must not be one of the RTP ports.",
+            "caller_ip": "Enter the IPv4 address of Home Assistant, for example 192.168.1.20.",
+            "required": "This field must not be empty."
         },
         "abort": {
             "already_configured": "Account is already configured",
@@ -95,7 +99,11 @@
             }
         },
         "error": {
-            "rtp_ports": "The RTP ports must be numbers between 1024 and 65535, and the first must not be above the last."
+            "rtp_ports": "The RTP ports must be numbers between 1024 and 65535, and the first must not be above the last.",
+            "sip_port": "The SIP port must be a number between 1 and 65535.",
+            "sip_port_in_rtp_range": "The SIP port must not be one of the RTP ports.",
+            "caller_ip": "Enter the IPv4 address of Home Assistant, for example 192.168.1.20.",
+            "required": "This field must not be empty."
         }
     },
     "entity": {

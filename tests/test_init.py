@@ -10,7 +10,7 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.helpers import device_registry as dr
 from pytest_homeassistant.test_util.aiohttp import AiohttpClientMockResponse
 
-from custom_components.sg_150.const import DOMAIN
+from custom_components.sg_150.const import CONF_SIP_PORT, DOMAIN
 from custom_components.sg_150.sip.minisip import MiniSIPServer
 from tests.conftest import API_URL, HOST, TOKEN
 from tests.utils import FIXTURES
@@ -177,3 +177,23 @@ async def test_rejected_cached_token_is_renewed_without_reauth(
         "devices",
     ]
     assert not hass.config_entries.flow.async_progress_by_handler(DOMAIN)
+
+
+async def test_invalid_stored_port_fails_setup_clearly(
+    hass: HomeAssistant,
+    config_entry: MockConfigEntry,
+    gateway_api: AiohttpClientMocker,
+    sip_servers: list[MiniSIPServer],
+) -> None:
+    """A non-numeric port stored by an older version ends in SETUP_ERROR."""
+    config_entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(
+        config_entry, options={**config_entry.options, CONF_SIP_PORT: "sip"}
+    )
+
+    await hass.config_entries.async_setup(config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert config_entry.state is ConfigEntryState.SETUP_ERROR
+    assert "Invalid SIP or RTP port" in config_entry.reason
+    assert not sip_servers
