@@ -9,6 +9,7 @@ import asyncio
 import base64
 import contextlib
 import hashlib
+import hmac
 import io
 import ipaddress
 import logging
@@ -88,6 +89,12 @@ TIMER_T1 = 0.5
 TIMER_T2 = 4.0
 # How long an outgoing call may ring after the first provisional response.
 INVITE_RING_TIMEOUT = 60.0
+# A digest challenge must be answered within this many seconds, and at most
+# this many challenges are outstanding; the oldest is dropped first.
+NONCE_LIFETIME = 60.0
+MAX_NONCES = 64
+
+_CONTACT_EXPIRES = re.compile(r";\s*expires\s*=\s*(\d+)", re.IGNORECASE)
 
 DEFAULT_RTP_PORTS = range(5004, 5014)
 
@@ -379,7 +386,10 @@ class SIPRegistration:
     """Where a SIP user is registered, and until when."""
 
     addr: tuple[str, int]
+    # Wall-clock time, for display.
     expires_at: float
+    # time.monotonic() deadline, immune to clock changes such as an NTP sync.
+    deadline: float
 
 
 @dataclass(frozen=True)
@@ -502,11 +512,11 @@ class MiniSIPServer:
         self.call_host = call_host or host
         self.port: int = port
         self.realm = realm
-        self.nonces = set()
+        # Outstanding digest challenges: nonce -> (opaque, monotonic issue time).
+        self._nonces: dict[str, tuple[str, float]] = {}
         self.expires = expires
         self.users = users  # username -> password
         self.registrations: dict[str, SIPRegistration] = {}
-        self.challenges = {}
         # Our outgoing INVITEs waiting for a final response, by call id.
         self.pending_invites: dict[str, _OutgoingInvite] = {}
         # INVITEs we gave up on, with the monotonic time until which late
@@ -556,26 +566,31 @@ class MiniSIPServer:
     async def _registration_cleanup_loop(self, interval: int = 10) -> None:
         try:
             while not self._cleanup_stop.is_set():
-                now = time.time()
-                expired = [
-                    user
-                    for user, info in self.registrations.items()
-                    if info.expires_at <= now
-                ]
-
-                for user in expired:
-                    info = self.registrations.pop(user, None)
-                    log_sip_event(
-                        "REGISTER_EXPIRED",
-                        username=user,
-                        addr=f"{info.addr}" if info else None,
-                    )
-                    await self._fire_event("on_register", user, None)
-
+                await self._expire()
                 await asyncio.sleep(interval)
 
         except asyncio.CancelledError:
             pass
+
+    async def _expire(self) -> None:
+        """Drop expired registrations and digest challenges."""
+        now = time.monotonic()
+        self._nonces = {
+            nonce: entry
+            for nonce, entry in self._nonces.items()
+            if now - entry[1] <= NONCE_LIFETIME
+        }
+        expired = [
+            user for user, info in self.registrations.items() if info.deadline <= now
+        ]
+        for user in expired:
+            info = self.registrations.pop(user, None)
+            log_sip_event(
+                "REGISTER_EXPIRED",
+                username=user,
+                addr=f"{info.addr}" if info else None,
+            )
+            await self._fire_event("on_register", user, None)
 
     def add_listener(
         self, event_name: str, callback: Callable[..., any]
@@ -679,14 +694,19 @@ class MiniSIPServer:
         """Get current server address."""
         return f"{self.call_host}:{self.port}"
 
-    def generate_nonce(self) -> str:
-        """Generate and store nonce."""
-        nonce = generate_opaque()
-        self.nonces.add(nonce)
-        return nonce
+    def generate_nonce(self) -> tuple[str, str]:
+        """Issue a digest challenge and return its nonce and opaque."""
+        nonce, opaque = generate_opaque(), generate_opaque()
+        if len(self._nonces) >= MAX_NONCES:
+            del self._nonces[next(iter(self._nonces))]  # the oldest
+        self._nonces[nonce] = (opaque, time.monotonic())
+        return nonce, opaque
 
     def parse_expires(self, headers: dict[str, str]) -> int:
-        """Get the expires header."""
+        """Return the requested registration time, 0 meaning unregister."""
+        # A Contact parameter takes precedence over the Expires header.
+        if match := _CONTACT_EXPIRES.search(headers.get("Contact", "")):
+            return int(match.group(1))
         exp = headers.get("Expires")
         if exp is None:
             return self.expires  # Server default expire should be 3600 as per RFC
@@ -723,8 +743,13 @@ class MiniSIPServer:
             not all([username, nonce, uri, response])
             or realm != self.realm
             or username not in self.users
-            or nonce not in self.nonces
-            or self.challenges.get(nonce) != opaque
+        ):
+            return False
+        opaque_and_issued = self._nonces.get(nonce)
+        if (
+            opaque_and_issued is None
+            or opaque_and_issued[0] != opaque
+            or time.monotonic() - opaque_and_issued[1] > NONCE_LIFETIME
         ):
             return False
 
@@ -739,7 +764,7 @@ class MiniSIPServer:
         else:
             expected = md5_hex(f"{ha1}:{nonce}:{ha2}")
 
-        return expected == response
+        return hmac.compare_digest(expected, response)
 
     def parse_cseq(self, cseq_header: str) -> (int, str):
         """Parse the CSeq header to extract method and number."""
@@ -866,8 +891,7 @@ class MiniSIPServer:
 
     def create_unauthorized_response(self, message: dict[str, str]) -> str:
         """Create an unauthorized response."""
-        nonce = self.generate_nonce()
-        opaque = self.challenges[nonce] = generate_opaque()
+        nonce, opaque = self.generate_nonce()
         log_sip_event("REGISTER_CHALLENGE", nonce=nonce, opaque=opaque)
         return build_response(
             401,
@@ -901,10 +925,25 @@ class MiniSIPServer:
             self._send(self.create_unauthorized_response(message), addr)
             return
 
+        # A nonce registers once, so a captured REGISTER cannot be replayed.
+        self._nonces.pop(auth["nonce"], None)
         expires = self.parse_expires(message)
         username = auth.get("username")
 
-        registration = SIPRegistration(addr=addr, expires_at=time.time() + expires)
+        if expires == 0:
+            self.registrations.pop(username, None)
+            log_sip_event("UNREGISTER", username=username, addr=f"{addr}")
+            await self._fire_event("on_register", username, None)
+            self._send(
+                build_response(200, "OK", message, extra_headers=["Expires: 0"]), addr
+            )
+            return
+
+        registration = SIPRegistration(
+            addr=addr,
+            expires_at=time.time() + expires,
+            deadline=time.monotonic() + expires,
+        )
         self.registrations[username] = registration
         log_sip_event(
             "REGISTER_SUCCESS",

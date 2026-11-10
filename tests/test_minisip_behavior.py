@@ -2,7 +2,9 @@
 
 import asyncio
 import contextlib
+import dataclasses
 import re
+import time
 import unittest
 from unittest.mock import patch
 
@@ -1052,6 +1054,100 @@ class MiniSIPLossTests(_MiniSIPCallTestCase):
         assert await task == (None, None)
         assert not self.server.rtp_sessions
         assert not self.server._tasks  # noqa: SLF001
+
+
+class MiniSIPRegistrationTests(unittest.IsolatedAsyncioTestCase):
+    """Digest challenges and the lifetime of registrations."""
+
+    def setUp(self) -> None:
+        """Create a server for the gateway user and record registrations."""
+        self.server = MiniSIPServer(
+            {SIP_USER: SIP_PASSWORD},
+            host=HA_HOST,
+            call_host=HA_HOST,
+            rtp_endpoint=fake_rtp_endpoint,
+        )
+        self.server.transport = FakeTransport()
+        self.registered: list[object] = []
+
+        async def on_register(_: str, registration: object) -> None:
+            self.registered.append(registration)
+
+        self.server.add_listener("on_register", on_register)
+
+    def _last_sent(self) -> str:
+        return self.server.transport.sent[-1][0].decode()
+
+    async def test_replayed_register_is_rejected(self) -> None:
+        """A captured REGISTER cannot move the registration to another address."""
+        data = await register(self.server)
+
+        await self.server.handle_datagram(data, STRANGER)
+
+        assert self._last_sent().startswith("SIP/2.0 401 Unauthorized")
+        assert self.server.registrations[SIP_USER].addr == GATEWAY
+
+    async def test_expired_challenge_is_rejected(self) -> None:
+        """A nonce older than NONCE_LIFETIME no longer authenticates."""
+        with patch.object(minisip, "NONCE_LIFETIME", -1):
+            await register(self.server)
+
+        assert self._last_sent().startswith("SIP/2.0 401 Unauthorized")
+        assert SIP_USER not in self.server.registrations
+
+    async def test_outstanding_challenges_are_capped_and_expire(self) -> None:
+        """Unanswered challenges neither pile up nor live forever."""
+        for _ in range(minisip.MAX_NONCES + 10):
+            self.server.generate_nonce()
+        assert len(self.server._nonces) == minisip.MAX_NONCES  # noqa: SLF001
+
+        with patch.object(minisip, "NONCE_LIFETIME", -1):
+            await self.server._expire()  # noqa: SLF001
+
+        assert not self.server._nonces  # noqa: SLF001
+
+    async def test_expires_zero_unregisters(self) -> None:
+        """REGISTER with Expires: 0 removes the registration at once."""
+        await register(self.server)
+
+        await register(self.server, call_id="register-2", Expires="0")
+
+        assert SIP_USER not in self.server.registrations
+        assert self.registered[-1] is None
+        assert self._last_sent().startswith("SIP/2.0 200 OK")
+        assert "\r\nExpires: 0\r\n" in self._last_sent()
+
+    async def test_contact_expires_takes_precedence(self) -> None:
+        """An expires parameter on Contact wins over the Expires header."""
+        await register(
+            self.server,
+            Contact=f"<sip:{SIP_USER}@{GATEWAY[0]}>;expires=120",
+            Expires="300",
+        )
+
+        assert "\r\nExpires: 120\r\n" in self._last_sent()
+
+        await register(
+            self.server,
+            call_id="register-2",
+            Contact=f"<sip:{SIP_USER}@{GATEWAY[0]}>;expires=0",
+        )
+        assert SIP_USER not in self.server.registrations
+
+    async def test_expiry_follows_the_monotonic_clock(self) -> None:
+        """A wall-clock jump does not expire a registration; the deadline does."""
+        await register(self.server)
+
+        with patch.object(minisip.time, "time", return_value=time.time() + 10**6):
+            await self.server._expire()  # noqa: SLF001
+        assert SIP_USER in self.server.registrations
+
+        self.server.registrations[SIP_USER] = dataclasses.replace(
+            self.server.registrations[SIP_USER], deadline=time.monotonic() - 1
+        )
+        await self.server._expire()  # noqa: SLF001
+        assert SIP_USER not in self.server.registrations
+        assert self.registered[-1] is None
 
 
 if __name__ == "__main__":

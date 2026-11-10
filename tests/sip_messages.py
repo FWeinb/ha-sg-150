@@ -74,19 +74,29 @@ def bye(call_id: str) -> bytes:
     )
 
 
-async def register(server: MiniSIPServer) -> None:
-    """Register the gateway with digest auth through raw datagrams."""
+async def register(
+    server: MiniSIPServer,
+    *,
+    call_id: str = "register-1",
+    addr: tuple[str, int] = GATEWAY,
+    **extra_headers: str,
+) -> bytes:
+    """
+    Register the gateway with digest auth through raw datagrams.
+
+    extra_headers are added to both REGISTERs, overriding Expires: 300.
+    Returns the authorized REGISTER, so a test can replay it.
+    """
     headers = {
-        "Via": f"SIP/2.0/UDP {GATEWAY[0]}:{GATEWAY[1]};branch=z0",
+        "Via": f"SIP/2.0/UDP {addr[0]}:{addr[1]};branch=z0",
         "From": f"<sip:{SIP_USER}@{HA_HOST}>;tag=r",
         "To": f"<sip:{SIP_USER}@{HA_HOST}>",
-        "Call-ID": "register-1",
+        "Call-ID": call_id,
         "CSeq": "1 REGISTER",
         "Expires": "300",
+        **extra_headers,
     }
-    await server.handle_datagram(
-        sip(f"REGISTER sip:{HA_HOST} SIP/2.0", headers), GATEWAY
-    )
+    await server.handle_datagram(sip(f"REGISTER sip:{HA_HOST} SIP/2.0", headers), addr)
     challenge = server.transport.sent[-1][0].decode()
     nonce = re.search(r'nonce="([^"]+)"', challenge).group(1)
     opaque = re.search(r'opaque="([^"]+)"', challenge).group(1)
@@ -101,9 +111,9 @@ async def register(server: MiniSIPServer) -> None:
         f'uri="{uri}", response="{response}", algorithm=MD5, '
         f'qop=auth, nc=00000001, cnonce="c", opaque="{opaque}"'
     )
-    await server.handle_datagram(
-        sip(f"REGISTER sip:{HA_HOST} SIP/2.0", headers), GATEWAY
-    )
+    data = sip(f"REGISTER sip:{HA_HOST} SIP/2.0", headers)
+    await server.handle_datagram(data, addr)
+    return data
 
 
 def cancel(call_id: str) -> bytes:
