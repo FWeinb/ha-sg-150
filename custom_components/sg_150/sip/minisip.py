@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Literal
 
+import av
 import numpy as np
 import soundfile as sf
 
@@ -149,19 +150,24 @@ def _pcm_to_pcma(pcm: np.ndarray) -> bytes:
 
 
 def _resample_pcm(pcm: np.ndarray, sample_rate: int) -> np.ndarray:
-    """Resample int16 PCM to 8 kHz using NumPy interpolation."""
-    pcm_array = np.asarray(pcm, dtype=np.float64)
+    """Resample int16 PCM to 8 kHz, low-pass filtered so it doesn't alias."""
+    pcm_array = np.asarray(pcm, dtype=np.int16)
     if sample_rate == TARGET_SAMPLE_RATE:
-        return pcm_array.astype(np.int16, copy=False)
+        return pcm_array
     if sample_rate <= 0:
         msg = f"Unsupported sample rate: {sample_rate}"
         raise ValueError(msg)
 
-    target_samples = max(1, round(len(pcm_array) * TARGET_SAMPLE_RATE / sample_rate))
-    old_x = np.arange(len(pcm_array), dtype=np.float64)
-    new_x = np.linspace(0, len(pcm_array) - 1, num=target_samples, dtype=np.float64)
-    resampled = np.interp(new_x, old_x, pcm_array)
-    return np.clip(resampled, -32768, 32767).astype(np.int16)
+    frame = av.AudioFrame.from_ndarray(
+        pcm_array.reshape(1, -1), format="s16", layout="mono"
+    )
+    frame.sample_rate = sample_rate
+    resampler = av.AudioResampler(format="s16", layout="mono", rate=TARGET_SAMPLE_RATE)
+    # Resampling None flushes the samples the filter still holds.
+    frames = [*resampler.resample(frame), *resampler.resample(None)]
+    if not frames:
+        return np.zeros(0, dtype=np.int16)
+    return np.concatenate([f.to_ndarray().reshape(-1) for f in frames])
 
 
 def convert_audio_to_pcma(audio_data: bytes, mime_type: str) -> bytes:
