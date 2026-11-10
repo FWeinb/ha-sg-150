@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 
 import httpx
@@ -44,6 +45,11 @@ TIMEOUT = 5
 # To avoid returning this, we wait for a few frames before returning a still image
 FRAME_WAIT_COUNT = 3
 
+# A frame without an end marker is dropped beyond this size.
+MAX_FRAME_BYTES = 4 * 1024 * 1024
+_SOI = b"\xff\xd8"
+_EOI = b"\xff\xd9"
+
 
 async def async_setup_entry(
     _: HomeAssistant,
@@ -71,25 +77,36 @@ async def async_setup_entry(
 
 async def _mjpeg_frames(stream: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
     """Split an MJPEG stream into its JPEG frames."""
-    data = b""
+    # `data` starts at a frame's start marker once one was found. `searched`
+    # bytes of it hold no end marker, so each chunk is only searched once.
+    data = bytearray()
+    searched = 0
 
     async for chunk in stream:
         data += chunk
 
         while True:
-            jpg_start = data.find(b"\xff\xd8")
-            if jpg_start == -1:
-                data = data[-1:]
-                break
+            if not data.startswith(_SOI):
+                jpg_start = data.find(_SOI)
+                if jpg_start == -1:
+                    del data[:-1]  # the last byte may start a marker
+                    searched = 0
+                    break
+                del data[:jpg_start]
+                searched = 0
 
-            jpg_end = data.find(b"\xff\xd9", jpg_start + 2)
+            jpg_end = data.find(_EOI, max(len(_SOI), searched - 1))
             if jpg_end == -1:
-                if jpg_start:
-                    data = data[jpg_start:]
+                searched = len(data)
+                if len(data) > MAX_FRAME_BYTES:
+                    LOGGER.debug("Dropping an MJPEG frame without an end marker")
+                    data.clear()
+                    searched = 0
                 break
 
-            yield data[jpg_start : jpg_end + 2]
-            data = data[jpg_end + 2 :]
+            yield bytes(data[: jpg_end + 2])
+            del data[: jpg_end + 2]
+            searched = 0
 
 
 async def _async_extract_image_from_mjpeg(
@@ -179,6 +196,7 @@ class SG150Camera(SG150DeviceEntity, Camera):  # pylint: disable=abstract-method
         """Yield the JPEG frames of the camera's MJPEG stream."""
         client = get_async_client(self.hass)
         async with client.stream("get", self._stream_url, timeout=TIMEOUT) as stream:
+            stream.raise_for_status()
             async for frame in _mjpeg_frames(stream.aiter_raw()):
                 yield frame
 
@@ -245,9 +263,12 @@ class SG150Camera(SG150DeviceEntity, Camera):  # pylint: disable=abstract-method
         """Return a still image response from the camera."""
         try:
             client = get_async_client(self.hass)
-            async with client.stream(
-                "get", self._stream_url, timeout=TIMEOUT
-            ) as stream:
+            # The httpx timeout applies per read; this bounds the whole snapshot.
+            async with (
+                asyncio.timeout(TIMEOUT),
+                client.stream("get", self._stream_url, timeout=TIMEOUT) as stream,
+            ):
+                stream.raise_for_status()
                 return await _async_extract_image_from_mjpeg(stream.aiter_raw())
 
         except TimeoutError:

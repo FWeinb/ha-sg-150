@@ -65,7 +65,10 @@ VIDEO_TIME_BASE = fractions.Fraction(1, 90000)
 # A keyframe every two seconds, so a viewer recovers quickly from packet loss.
 KEYFRAME_INTERVAL = 2 * VIDEO_FPS
 VIDEO_QUEUE = 30
+# A failed camera stream is reopened after RECONNECT_DELAY, doubling up to
+# MAX_RECONNECT_DELAY until a frame arrives again.
 RECONNECT_DELAY = 2.0
+MAX_RECONNECT_DELAY = 30.0
 # Door audio frames a viewer may lag behind before the oldest are dropped.
 AUDIO_QUEUE = 5
 AUDIO_TIME_BASE = fractions.Fraction(1, SAMPLE_RATE)
@@ -189,9 +192,11 @@ class VideoSource:
         self._decoder = self._encoder = None
         self._started = time.monotonic()
         last_frame = -1.0
+        delay, warned = RECONNECT_DELAY, False
         while True:
             try:
                 async for jpeg in self._jpegs():
+                    delay, warned = RECONNECT_DELAY, False
                     now = time.monotonic()
                     if now - last_frame < 1 / VIDEO_FPS:
                         continue
@@ -201,9 +206,14 @@ class VideoSource:
                     for packet in packets:
                         for track in list(self._tracks):
                             track.put(packet)
-            except Exception:  # noqa: BLE001
-                LOGGER.debug("Camera video stream failed", exc_info=True)
-            await asyncio.sleep(RECONNECT_DELAY)
+            except Exception as err:  # noqa: BLE001
+                if warned:
+                    LOGGER.debug("Camera video stream failed", exc_info=True)
+                else:
+                    warned = True
+                    LOGGER.warning("Camera video stream failed, retrying: %r", err)
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, MAX_RECONNECT_DELAY)
 
     def _encode(self, jpeg: bytes, pts: int) -> list[av.Packet]:
         """Decode a JPEG and encode it to VP8; runs in an executor thread."""
